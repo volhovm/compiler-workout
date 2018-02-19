@@ -1,17 +1,11 @@
 (* Simple expressions: syntax and semantics *)
 
-(* Opening a library for generic programming (https://github.com/dboulytchev/GT).
-   The library provides "@type ..." syntax extension and plugins like show, etc.
-*)
-open GT 
-             
-(* The type for the expression. Note, in regular OCaml there is no "@type..." 
-   notation, it came from GT. 
-*)
+open GT
+
 @type expr =
-  (* integer constant *) | Const of int
-  (* variable         *) | Var   of string
-  (* binary operator  *) | Binop of string * expr * expr with show
+  | Const of int
+  | Var   of string
+  | Binop of string * expr * expr with show
 
 (* Available binary operators:
     !!                   --- disjunction
@@ -21,34 +15,36 @@ open GT
     *, /, %              --- multiplication, division, reminder
 *)
 
-(* State: a partial map from variables to integer values. *)
 type state = string -> int
 
-(* Empty state: maps every variable into nothing. *)
 let empty = fun x -> failwith (Printf.sprintf "Undefined variable %s" x)
 
-(* Update: non-destructively "modifies" the state s by binding the variable x 
-   to value v and returns the new state.
-*)
-let update x v s = fun y -> if x = y then v else s y
+let update (x:string) (v:int) (s:state) = fun y -> if x = y then v else s y
 
-(* An example of a non-trivial state: *)                                                   
-let s = update "x" 1 @@ update "y" 2 @@ update "z" 3 @@ update "t" 4 empty
-
-(* Some testing; comment this definition out when submitting the solution. *)
-let _ =
-  List.iter
-    (fun x ->
-       try  Printf.printf "%s=%d\n" x @@ s x
-       with Failure s -> Printf.printf "%s\n" s
-    ) ["x"; "a"; "y"; "z"; "t"; "b"]
-
-(* Expression evaluator
-
-     val eval : state -> expr -> int
- 
-   Takes a state and an expression, and returns the value of the expression in 
-   the given state.
-*)
-let eval = failwith "Not implemented yet"
-                    
+let rec eval (s:state) (e:expr) =
+  match e with
+  | Const i -> i
+  | Var v -> s v
+  | Binop (op, l, r) ->
+     (* omg these nested 'let's are terrible, how about 'where'? non-monadic do notation? :\ *)
+     let matchOp (f : int -> int -> int) = f (eval s l) (eval s r) in
+     let fromBool (b : bool) : int = if b then 1 else 0 in
+     let toBool (i : int) = match i with
+            | 0 -> false
+            | _ -> true
+     in matchOp @@
+          fun x y -> match op with
+                     | "+" -> x + y
+                     | "-" -> x - y
+                     | "*" -> x * y
+                     | "/" -> x / y
+                     | "%" -> x mod y
+                     | "<"  -> fromBool (x < y)
+                     | "<=" -> fromBool (x <= y)
+                     | ">"  -> fromBool (x > y)
+                     | ">=" -> fromBool (x >= y)
+                     | "==" -> fromBool (x == y)
+                     | "!=" -> fromBool (x != y)
+                     | "&&" -> fromBool (toBool x && toBool y)
+                     | "!!" -> fromBool (toBool x || toBool y)
+                     | x -> failwith (Printf.sprintf "eval: incorrect op: %s" x)
