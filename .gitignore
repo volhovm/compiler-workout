@@ -1,0 +1,10 @@
+.depend
+*.cmi
+*.log
+*.opt
+*.cmx
+*.cmi
+*.o
+*~
+~*
+*#
