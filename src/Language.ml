@@ -37,38 +37,40 @@ module Expr =
     *)
     let update x v s = fun y -> if x = y then v else s y
 
+    let evalbinop op x y =
+         let fromBool (b : bool) : int = if b then 1 else 0 in
+         let toBool (i : int) = match i with
+                | 0 -> false
+                | _ -> true
+         in match op with
+            | "+" -> x + y
+            | "-" -> x - y
+            | "*" -> x * y
+            | "/" -> x / y
+            | "%" -> x mod y
+            | "<"  -> fromBool (x < y)
+            | "<=" -> fromBool (x <= y)
+            | ">"  -> fromBool (x > y)
+            | ">=" -> fromBool (x >= y)
+            | "==" -> fromBool (x == y)
+            | "!=" -> fromBool (x != y)
+            | "&&" -> fromBool (toBool x && toBool y)
+            | "!!" -> fromBool (toBool x || toBool y)
+            | x -> failwith (Printf.sprintf "eval: incorrect op: %s" x)
+
     (* Expression evaluator
 
           val eval : state -> t -> int
 
        Takes a state and an expression, and returns the value of the expression in
        the given state.
-     *)
-    let to_func op =
-      let bti   = function true -> 1 | _ -> 0 in
-      let itb b = b <> 0 in
-      let (|>) f g   = fun x y -> f (g x y) in
-      match op with
-      | "+"  -> (+)
-      | "-"  -> (-)
-      | "*"  -> ( * )
-      | "/"  -> (/)
-      | "%"  -> (mod)
-      | "<"  -> bti |> (< )
-      | "<=" -> bti |> (<=)
-      | ">"  -> bti |> (> )
-      | ">=" -> bti |> (>=)
-      | "==" -> bti |> (= )
-      | "!=" -> bti |> (<>)
-      | "&&" -> fun x y -> bti (itb x && itb y)
-      | "!!" -> fun x y -> bti (itb x || itb y)
-      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)
-
-    let rec eval st expr =
-      match expr with
-      | Const n -> n
-      | Var   x -> st x
-      | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
+    *)
+    let rec eval (s:state) (e:t) : int = match e with
+                | Const i -> i
+                | Var v -> s v
+                | Binop (op, l, r) ->
+                  let matchOp (f : int -> int -> int) = f (eval s l) (eval s r)
+                  in matchOp @@ evalbinop op
 
     (* Expression parser. You can use the following terminals:
 
@@ -101,12 +103,11 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval ((st, i, o) as conf) stmt =
-      match stmt with
-      | Read    x       -> (match i with z::i' -> (Expr.update x z st, i', o) | _ -> failwith "Unexpected end of input")
-      | Write   e       -> (st, i, o @ [Expr.eval st e])
-      | Assign (x, e)   -> (Expr.update x (Expr.eval st e) st, i, o)
-      | Seq    (s1, s2) -> eval (eval conf s1) s2
+    let rec eval ((s0,i,o) as s) t = match t with
+              | Read x -> (Expr.update x (List.hd i) s0, List.tl i, o)
+              | Write expr -> (s0, i, o @ [Expr.eval s0 expr])
+              | Assign (x, expr) -> (Expr.update x (Expr.eval s0 expr) s0, i, o)
+              | Seq (l,r) -> eval (eval s l) r
 
     (* Statement parser *)
     ostap (
