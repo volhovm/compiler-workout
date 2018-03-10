@@ -5,6 +5,7 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open Ostap.Util
 
 (* Simple expressions: syntax and semantics *)
 module Expr =
@@ -76,9 +77,27 @@ module Expr =
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string
-    *)
+     *)
+    let mkBinop ops =
+      List.map ( fun op -> ostap ($(op))
+               , fun l r -> Binop (op, l, r))
+               ops
+
     ostap (
-      parse: empty {failwith "Not yet implemented"}
+      parse: pBinop | pLeaf;
+
+      pLeaf: d:DECIMAL { Const d } | x:IDENT { Var x } | -"(" parse -")" | pBinop;
+
+      pBinop: !(Ostap.Util.expr
+        (fun x -> x)
+        [|
+          `Lefta, mkBinop ["!!"];
+          `Lefta, mkBinop ["&&"];
+          `Nona,  mkBinop ["<="; "<"; ">="; ">"; "!="; "=="];
+          `Lefta, mkBinop ["+"; "-"];
+          `Lefta, mkBinop ["*"; "/"; "%"]
+        |]
+        pLeaf)
     )
 
   end
@@ -111,7 +130,14 @@ module Stmt =
 
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not yet implemented"}
+      parse: !(Ostap.Util.expr
+               (fun x -> x)
+               [| `Righta, [ostap (";"), fun s1 s2 -> Seq (s1, s2)] |]
+               pOne
+              );
+      pOne: -"read" -"(" v:IDENT -")" { Read v }
+          | -"write" -"(" e:!(Expr.parse) -")" { Write e }
+          | v:IDENT -":=" e:!(Expr.parse) { Assign (v,e) }
     )
 
   end
