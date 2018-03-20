@@ -1,11 +1,11 @@
-open GT       
+open GT
 open Language
-       
+
 (* The type for the stack machine instructions *)
 @type insn =
 (* binary operator                 *) | BINOP   of string
 (* put a constant on the stack     *) | CONST   of int
-(* put a string on the stack       *) | STRING  of string                      
+(* put a string on the stack       *) | STRING  of string
 (* load a variable to the stack    *) | LD      of string
 (* store a variable from the stack *) | ST      of string
 (* store in an array               *) | STA     of string * int
@@ -16,10 +16,10 @@ open Language
 (* end procedure definition        *) | END
 (* calls a function/procedure      *) | CALL    of string * int * bool
 (* returns from a function         *) | RET     of bool with show
-                                                   
+
 (* The type for the stack machine program *)
 type prg = insn list
-                            
+
 (* The type for the stack machine configuration: control stack, stack and configuration from statement
    interpreter
 *)
@@ -38,7 +38,7 @@ let split n l =
   | n -> let h::tl = rest in unzip (h::taken, tl) (n-1)
   in
   unzip ([], l) n
-        
+
 let rec eval env ((cstack, stack, ((st, i, o) as c)) as conf) prg = failwith "Not implemented"
 
 (* Top-level evaluation
