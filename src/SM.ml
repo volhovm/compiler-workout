@@ -1,10 +1,10 @@
-open GT       
+open GT
 open Language
-       
+
 (* The type for the stack machine instructions *)
 @type insn =
 (* binary operator                 *) | BINOP of string
-(* put a constant on the stack     *) | CONST of int                 
+(* put a constant on the stack     *) | CONST of int
 (* read to stack                   *) | READ
 (* write from stack                *) | WRITE
 (* load a variable to the stack    *) | LD    of string
@@ -16,10 +16,10 @@ open Language
 (* end procedure definition        *) | END
 (* calls a function/procedure      *) | CALL  of string * int * bool
 (* returns from a function         *) | RET   of bool with show
-                                                   
-(* The type for the stack machine program *)                                                               
+
+(* The type for the stack machine program *)
 type prg = insn list
-                            
+
 (* The type for the stack machine configuration: control stack, stack and configuration from statement
    interpreter
  *)
@@ -31,7 +31,7 @@ type config = (prg * State.t) list * int list * Expr.config
 
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
-*)                                                  
+*)
 let rec eval env ((cstack, stack, ((st, i, o) as c)) as conf) prg = failwith "Not implemented"
 
 (* Top-level evaluation
