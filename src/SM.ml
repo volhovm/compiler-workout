@@ -1,6 +1,6 @@
-open GT       
+open GT
 open Language
-       
+
 (* The type for the stack machine instructions *)
 @type insn =
 (* binary operator                 *) | BINOP   of string
@@ -24,12 +24,12 @@ open Language
 (* enters a scope                  *) | ENTER   of string list
 (* leaves a scope                  *) | LEAVE
 with show
-                                                   
+
 (* The type for the stack machine program *)
 type prg = insn list
 
 let print_prg p = List.iter (fun i -> Printf.printf "%s\n" (show(insn) i)) p
-                            
+
 (* The type for the stack machine configuration: control stack, stack and configuration from statement
    interpreter
 *)
@@ -41,14 +41,14 @@ type config = (prg * State.t) list * Value.t list * Expr.config
 
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
-*)                                                  
+*)
 let split n l =
   let rec unzip (taken, rest) = function
   | 0 -> (List.rev taken, rest)
   | n -> let h::tl = rest in unzip (h::taken, tl) (n-1)
   in
   unzip ([], l) n
-          
+
 let rec eval env ((cstack, stack, ((st, i, o) as c)) as conf) _ = failwith "Not yet implemented"
 
 (* Top-level evaluation
@@ -92,7 +92,7 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile (defs, p) = 
+let compile (defs, p) =
   let label s = "L" ^ s in
   let rec call f args p =
     let args_code = List.concat @@ List.map expr args in
@@ -124,5 +124,4 @@ let compile (defs, p) =
   in
   let lend, env = env#get_label in
   let _, flag, code = compile_stmt lend env p in
-  (if flag then code @ [LABEL lend] else code) @ [END] @ (List.concat def_code) 
-
+  (if flag then code @ [LABEL lend] else code) @ [END] @ (List.concat def_code)

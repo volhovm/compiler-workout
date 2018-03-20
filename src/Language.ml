@@ -13,12 +13,12 @@ module Value =
 
     @type t = Int of int | String of string | Array of t list | Sexp of string * t list with show
 
-    let to_int = function 
-    | Int n -> n 
+    let to_int = function
+    | Int n -> n
     | _ -> failwith "int value expected"
 
-    let to_string = function 
-    | String s -> s 
+    let to_string = function
+    | String s -> s
     | _ -> failwith "string value expected"
 
     let to_array = function
@@ -38,11 +38,11 @@ module Value =
     let update_array  a i x = List.init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
 
   end
-       
+
 (* States *)
 module State =
   struct
-                                                                
+
     (* State: global state, local state, scope variables *)
     type t =
     | G of (string -> Value.t)
@@ -52,12 +52,12 @@ module State =
     let undefined x = failwith (Printf.sprintf "Undefined variable: %s" x)
 
     (* Bind a variable to a value in a state *)
-    let bind x v s = fun y -> if x = y then v else s y 
+    let bind x v s = fun y -> if x = y then v else s y
 
     (* Empty state *)
     let empty = G undefined
 
-    (* Update: non-destructively "modifies" the state s by binding the variable x 
+    (* Update: non-destructively "modifies" the state s by binding the variable x
        to value v and returns the new state w.r.t. a scope
     *)
     let update x v s =
@@ -98,13 +98,13 @@ module State =
 
     (* Drop a local scope *)
     let drop (L (_, _, e)) = e
-                               
+
   end
 
 (* Builtins *)
 module Builtin =
   struct
-      
+
     let eval (st, i, o, _) args = function
     | "read"     -> (match i with z::i' -> (st, i', o, Some (Value.of_int z)) | _ -> failwith "Unexpected end of input")
     | "write"    -> (st, i, o @ [Value.to_int @@ List.hd args], None)
@@ -115,20 +115,20 @@ module Builtin =
                                      | Value.Array    a  -> List.nth a i
                                      | Value.Sexp (_, a) -> List.nth a i
                                )
-                    )         
+                    )
     | ".length"  -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Array a -> List.length a | Value.String s -> String.length s)))
     | ".array"   -> (st, i, o, Some (Value.of_array args))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
-    | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))                     
-       
+    | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))
+
   end
-    
+
 (* Simple expressions: syntax and semantics *)
 module Expr =
   struct
-    
-    (* The type for expressions. Note, in regular OCaml there is no "@type..." 
-       notation, it came from GT. 
+
+    (* The type for expressions. Note, in regular OCaml there is no "@type..."
+       notation, it came from GT.
     *)
     @type t =
     (* integer constant   *) | Const  of int
@@ -138,7 +138,7 @@ module Expr =
     (* variable           *) | Var    of string
     (* binary operator    *) | Binop  of string * t * t
     (* element extraction *) | Elem   of t * t
-    (* length             *) | Length of t 
+    (* length             *) | Length of t
     (* function call      *) | Call   of string * t list with show
 
     (* Available binary operators:
@@ -151,20 +151,20 @@ module Expr =
 
     (* The type of configuration: a state, an input stream, an output stream, an optional value *)
     type config = State.t * int list * int list * Value.t option
-                                                            
+
     (* Expression evaluator
 
           val eval : env -> config -> t -> int * config
 
 
-       Takes an environment, a configuration and an expresion, and returns another configuration. The 
+       Takes an environment, a configuration and an expresion, and returns another configuration. The
        environment supplies the following method
 
            method definition : env -> string -> int list -> config -> config
 
-       which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
+       which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration,
        an returns a pair: the return value for the call and the resulting configuration
-    *)                                                       
+    *)
     let to_func op =
       let bti   = function true -> 1 | _ -> 0 in
       let itb b = b <> 0 in
@@ -183,8 +183,8 @@ module Expr =
       | "!=" -> bti |> (<>)
       | "&&" -> fun x y -> bti (itb x && itb y)
       | "!!" -> fun x y -> bti (itb x || itb y)
-      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
-    
+      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)
+
     let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
@@ -197,18 +197,18 @@ module Expr =
           xs
       in
       (st, i, o, List.rev vs)
-         
+
     (* Expression parser. You can use the following terminals:
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
-         DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
+         DECIMAL --- a decimal constant [0-9]+ as a string
     *)
-    ostap (                                      
+    ostap (
       parse: empty {failwith "Not implemented"}
     )
-    
+
   end
-                    
+
 (* Simple statements: syntax and sematics *)
 module Stmt =
   struct
@@ -224,55 +224,55 @@ module Stmt =
         (* identifier       *) | Ident  of string
         with show, foldl
 
-        (* Pattern parser *)                                 
+        (* Pattern parser *)
         ostap (
           parse: empty {failwith "Not implemented"}
         )
-        
+
         let vars p =
           transform(t) (object inherit [string list] @t[foldl] method c_Ident s _ name = name::s end) [] p
-        
+
       end
-        
+
     (* The type for statements *)
     @type t =
     (* assignment                       *) | Assign of string * Expr.t list * Expr.t
-    (* composition                      *) | Seq    of t * t 
+    (* composition                      *) | Seq    of t * t
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
     (* loop with a post-condition       *) | Repeat of t * Expr.t
     (* pattern-matching                 *) | Case   of Expr.t * (Pattern.t * t) list
     (* return statement                 *) | Return of Expr.t option
-    (* call a procedure                 *) | Call   of string * Expr.t list 
+    (* call a procedure                 *) | Call   of string * Expr.t list
     (* leave a scope                    *) | Leave  with show
-                                                                                   
+
     (* Statement evaluator
 
          val eval : env -> config -> t -> config
 
-       Takes an environment, a configuration and a statement, and returns another configuration. The 
+       Takes an environment, a configuration and a statement, and returns another configuration. The
        environment is the same as for expressions
     *)
     let update st x v is =
       let rec update a v = function
-      | []    -> v           
+      | []    -> v
       | i::tl ->
           let i = Value.to_int i in
           (match a with
            | Value.String s when tl = [] -> Value.String (Value.update_string s i (Char.chr @@ Value.to_int v))
            | Value.Array a               -> Value.Array  (Value.update_array  a i (update (List.nth a i) v tl))
-          ) 
+          )
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
 
     let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemented"
-                                                        
+
     (* Statement parser *)
     ostap (
       parse: empty {failwith "Not implemented"}
     )
-      
+
   end
 
 (* Function and procedure definitions *)
@@ -292,11 +292,11 @@ module Definition =
     )
 
   end
-    
+
 (* The top-level definitions *)
 
 (* The top-level syntax category is a pair of definition list and statement (program body) *)
-type t = Definition.t list * Stmt.t    
+type t = Definition.t list * Stmt.t
 
 (* Top-level evaluator
 
@@ -306,7 +306,7 @@ type t = Definition.t list * Stmt.t
 *)
 let eval (defs, body) i =
   let module M = Map.Make (String) in
-  let m          = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in  
+  let m          = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in
   let _, _, o, _ =
     Stmt.eval
       (object
