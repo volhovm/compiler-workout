@@ -25,7 +25,8 @@ let main =
     let to_compile = not (interpret || stack) in
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
     match parse infile with
-    | `Ok prog ->
+    | `Ok (prog : Language.t) ->
+      Printf.eprintf "parsed!\n";
       if to_compile
       then
         let basename = Filename.chop_suffix infile ".expr" in
@@ -38,7 +39,7 @@ let main =
             read (acc @ [r])
           with End_of_file -> acc
         in
-        let input = read [] in
+        let input : int list = read [] in
         let output =
           if interpret
           then Language.eval prog input
