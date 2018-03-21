@@ -31,27 +31,29 @@ let main =
     let stack      = Sys.argv.(1) = "-s"  in
     let to_compile = not (interpret || stack) in
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
-    match parse infile with
-    | `Ok prog ->
-      if to_compile
-      then
-        let basename = Filename.chop_suffix infile ".expr" in
-        ignore @@ X86.build prog basename
-      else
-        let rec read acc =
-          try
-            let r = read_int () in
-            Printf.printf "> ";
-            read (acc @ [r])
-          with End_of_file -> acc
-        in
-        let input = read [] in
-        let output =
-          if interpret
-          then Language.eval prog input
-          else SM.run (SM.compile prog) input
-        in
-        List.iter (fun i -> Printf.printf "%d\n" i) output
-    | `Fail er -> Printf.eprintf "Syntax error: %s\n" er
-  with Invalid_argument _ ->
-    Printf.printf "Usage: rc [-i | -s] <input file.expr>\n"
+    let proceed (prog : Language.t) =
+            Printf.eprintf "parsed!\n";
+            if to_compile
+            then
+              let basename = Filename.chop_suffix infile ".expr" in
+              ignore @@ X86.build prog basename
+            else
+              let rec read acc =
+                try
+                  let r = read_int () in
+                  Printf.printf "> ";
+                  read (acc @ [r])
+                with End_of_file -> acc
+              in
+              let input : int list = read [] in
+              let output =
+                if interpret
+                then Language.eval prog input
+                else SM.run (SM.compile prog) input
+              in
+              List.iter (fun i -> Printf.printf "%d\n" i) output in
+    match (*Stdlib.time "parse"*) parse infile with
+        | `Ok (prog : Language.t) -> (*Stdlib.time "proceed"*) proceed prog
+        | `Fail er -> Printf.eprintf "Syntax error: %s\n" er
+  with Invalid_argument o ->
+    Printf.printf "Usage: rc [-i | -s] <input file.expr>\nError: %s" o

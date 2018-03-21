@@ -1,4 +1,4 @@
-TESTS=$(basename $(wildcard test*.expr))
+TESTS=$(basename $(sort $(wildcard test*.expr)))
 
 RC=../src/rc.opt
 
@@ -7,9 +7,13 @@ RC=../src/rc.opt
 check: $(TESTS)
 
 $(TESTS): %: %.expr
-	@$(RC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
+	@echo "Testing interpreter"
 	cat $@.input | $(RC) -i $< > $@.log && diff $@.log orig/$@.log
+	@echo "Testing SM"
 	cat $@.input | $(RC) -s $< > $@.log && diff $@.log orig/$@.log
+	@echo "Testing asm"
+	@$(RC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
 
 clean:
 	rm -f test*.log *.s *~ $(TESTS)
+	find deep-expressions/ expressions/ -type f -name "generated*" -and ! -name "*.*" -exec rm {} \;
