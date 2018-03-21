@@ -72,7 +72,7 @@ let show instr =
   | Pop    s           -> Printf.sprintf "\tpopl\t%s"      (opnd s)
   | Ret                -> "\tret"
   | Call   p           -> Printf.sprintf "\tcall\t%s" p
-  | Label  l           -> Printf.sprintf "%s:\n" l
+  | Label  l           -> Printf.sprintf "\n%s:" l
   | Jmp    l           -> Printf.sprintf "\tjmp\t%s" l
   | CJmp  (s , l)      -> Printf.sprintf "\tj%s\t%s" s l
 
@@ -86,114 +86,53 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code =
-  let suffix = function
-  | "<"  -> "l"
-  | "<=" -> "le"
-  | "==" -> "e"
-  | "!=" -> "ne"
-  | ">=" -> "ge"
-  | ">"  -> "g"
-  | _    -> failwith "unknown operator"	
-  in
-  let rec compile' env scode =
-    let on_stack = function S _ -> true | _ -> false in
-    match scode with
-    | [] -> env, []
-    | instr :: scode' ->
-        let env', code' =
-          match instr with
-          | READ ->
-             let s, env' = env#allocate in
-             (env', [Call "Lread"; Mov (eax, s)])               
-          | WRITE ->
-             let s, env' = env#pop in
-             (env', [Push s; Call "Lwrite"; Pop eax])
-  	  | CONST n ->
-             let s, env' = env#allocate in
-	     (env', [Mov (L n, s)])               
-	  | LD x ->
-             let s, env' = (env#global x)#allocate in
-             env',
-	     (match s with
-	      | S _ | M _ -> [Mov (M (env'#loc x), eax); Mov (eax, s)]
-	      | _         -> [Mov (M (env'#loc x), s)]
-	     )	        
-	  | ST x ->
-	     let s, env' = (env#global x)#pop in
-             env',
-             (match s with
-              | S _ | M _ -> [Mov (s, eax); Mov (eax, M (env'#loc x))]
-              | _         -> [Mov (s, M (env'#loc x))]
-	     )
-          | BINOP op ->
-	     let x, y, env' = env#pop2 in
-             env'#push y,
-             (match op with
-	      | "/" | "%" ->
-                 [Mov (y, eax);
-                  Cltd;
-                  IDiv x;
-                  Mov ((match op with "/" -> eax | _ -> edx), y)
-                 ]
-              | "<" | "<=" | "==" | "!=" | ">=" | ">" ->
-                 (match x with
-                  | M _ | S _ ->
-                     [Binop ("^", eax, eax);
-                      Mov   (x, edx);
-                      Binop ("cmp", edx, y);
-                      Set   (suffix op, "%al");
-                      Mov   (eax, y)
-                     ]
-                  | _ ->
-                     [Binop ("^"  , eax, eax);
-                      Binop ("cmp", x, y);
-                      Set   (suffix op, "%al");
-                      Mov   (eax, y)
-                     ]
-                 )
-              | "*" ->
-                 if on_stack x && on_stack y 
-		 then [Mov (y, eax); Binop (op, x, eax); Mov (eax, y)]
-                 else [Binop (op, x, y)]
-	      | "&&" ->
-		 [Mov   (x, eax);
-		  Binop (op, x, eax);
-		  Mov   (L 0, eax);
-		  Set   ("ne", "%al");
-                  
-		  Mov   (y, edx);
-		  Binop (op, y, edx);
-		  Mov   (L 0, edx);
-		  Set   ("ne", "%dl");
-                  
-                  Binop (op, edx, eax);
-		  Set   ("ne", "%al");
-                  
-		  Mov   (eax, y)
-                 ]		   
-	      | "!!" ->
-		 [Mov   (y, eax);
-		  Binop (op, x, eax);
-                  Mov   (L 0, eax);
-		  Set   ("ne", "%al");
-		  Mov   (eax, y)
-                 ]		   
-	      | _   ->
-                 if on_stack x && on_stack y 
-                 then [Mov   (x, eax); Binop (op, eax, y)]
-                 else [Binop (op, x, y)]
-             )
-          | LABEL s     -> env, [Label s]
-	  | JMP   l     -> env, [Jmp l]
-          | CJMP (s, l) ->
-              let x, env = env#pop in
-              env, [Binop ("cmp", L 0, x); CJmp  (s, l)]
-        in
-        let env'', code'' = compile' env' scode' in
-	env'', code' @ code''
-  in
-  compile' env code
+let rec compile env =
+  let updenv (s,env') action = env', action s in
+  let safeMov a b = [Mov (a,eax); Mov (eax,b)] in
+  let null x = Binop ("^", x, x) in
+  let flip x a b = x b a in (* what a shame not to have this in stdlib... *)
+  let isreg x = match x with R _ -> true | _ -> false in
+  let withreg x code = if isreg x then code x else [Mov (x,edx)] @ code edx in
+  let compileStep env = function
+    | CONST n -> updenv env#allocate            @@ fun s -> [Mov (L n, s)]
+    | WRITE ->   updenv env#pop                 @@ fun s -> [Push s; Call "Lwrite"; Pop eax]
+    | READ ->    updenv env#allocate            @@ fun s -> [Call "Lread"; Mov (eax, s)]
+    | LD x ->    updenv (env#global x)#allocate @@ fun s -> safeMov (M (env#loc x)) s
+    | ST x ->    updenv (env#global x)#pop      @@ fun s -> safeMov s (M (env#loc x))
+    | LABEL l    -> env, [Label l]
+    | JMP l      -> env, [Jmp l]
+    | CJMP (s,l) -> updenv (env#pop) @@ flip withreg @@ fun x -> [Binop ("!!", x, x); CJmp (s,l)]
+    | BINOP op ->
+       let rhs, lhs, env' = env#pop2 in
+       let newvar, env'' = env'#allocate in
+       let binopCmp setArg =
+         withreg rhs @@ fun x ->
+         [null eax;
+          Binop ("cmp", x, lhs);
+          Set (setArg, "%al");
+          Mov (eax, newvar)] in
+       let convBin dest =
+         [null eax;
+          Binop ("cmp", eax, dest);
+          Set ("NE", "%al");
+          Mov (eax, dest)] in
+       env'',
+       match op with
+         | "+" | "-" | "*" -> withreg lhs (fun x -> [Binop (op, rhs, x); Mov (x, newvar)])
+         | "/" | "%"       -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov ((if op = "/" then eax else edx), newvar)]
+         | "<"  -> binopCmp "L"
+         | "<=" -> binopCmp "LE"
+         | ">"  -> binopCmp "G"
+         | ">=" -> binopCmp "GE"
+         | "==" -> binopCmp "E"
+         | "!=" -> binopCmp "NE"
+         | "&&" | "!!" -> convBin lhs @ convBin rhs @
+                          withreg lhs (fun x -> [Binop (op, rhs, x); Mov (x, newvar)])
+         | x -> failwith ("binop not supported: " ^ x)
+  in List.fold_left (fun (env,acc) i ->
+                     (* Bifunctors maybe? *)
+                     let e',a' = compileStep env i
+                     in e', acc @ a') (env,[])
 
 (* A set of strings *)
 module S = Set.Make (String)
@@ -215,8 +154,8 @@ class env =
         | []                            -> ebx     , 0
         | (S n)::_                      -> S (n+1) , n+1
         | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | (M _)::s                      -> allocate' s
-        | _                             -> S 0     , 1
+        | (R n)::_                      -> S 0     , 1
+        | _                             -> failwith "couldn't allocate"
         in
         allocate' stack
       in
@@ -278,4 +217,4 @@ let build stmt name =
   Printf.fprintf outf "%s" (genasm stmt);
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
-  Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
+  Sys.command (Printf.sprintf "gcc -m32 -g -F dwarf -o %s %s/runtime.o %s.s" name inc name)
