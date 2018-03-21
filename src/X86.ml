@@ -80,7 +80,47 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let rec compile env =
+  let updenv (s,env') action = env', action s in
+  let safeMov a b = [Mov (a,eax); Mov (eax,b)] in
+  let compileStep env = function
+    | CONST n -> updenv env#allocate            @@ fun s -> [Mov (L n, s)]
+    | WRITE ->   updenv env#pop                 @@ fun s -> [Push s; Call "Lwrite"; Pop eax]
+    | READ ->    updenv env#allocate            @@ fun s -> [Call "Lread"; Mov (eax, s)]
+    | LD x ->    updenv (env#global x)#allocate @@ fun s -> safeMov (M (env#loc x)) s
+    | ST x ->    updenv (env#global x)#pop      @@ fun s -> safeMov s (M (env#loc x))
+    | BINOP op ->
+       let rhs, lhs, env' = env#pop2 in
+       let newvar, env'' = env'#allocate in
+       let null x = Binop ("^", x, x) in
+       let binopCmp setArg =
+         [Mov (rhs, edx);
+          null eax;
+          Binop ("cmp", edx, lhs);
+          Set (setArg, "%al");
+          Mov (eax, newvar)] in
+       let convBin dest =
+         [null eax;
+          Binop ("cmp", eax, dest);
+          Set ("NE", "%al");
+          Mov (eax, dest)] in
+       env'',
+       match op with
+         | "+" | "-" | "*" -> [Mov (lhs, eax); Binop (op, rhs, eax); Mov (eax, newvar)]
+         | "/" | "%"       -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov ((if op = "/" then eax else edx), newvar)]
+         | "<"  -> binopCmp "L"
+         | "<=" -> binopCmp "LE"
+         | ">"  -> binopCmp "G"
+         | ">=" -> binopCmp "GE"
+         | "==" -> binopCmp "E"
+         | "!=" -> binopCmp "NE"
+         | "&&" | "!!" -> convBin lhs @ convBin rhs @
+                            [Mov (lhs, eax); Binop (op, rhs, eax); Mov (eax, newvar)]
+         | x -> failwith ("binop not supported: " ^ x)
+  in List.fold_left (fun (env,acc) i ->
+                     (* Bifunctors maybe? *)
+                     let e',a' = compileStep env i
+                     in e', acc @ a') (env,[])
 
 (* A set of strings *)
 module S = Set.Make (String)
@@ -102,7 +142,8 @@ class env =
         | []                            -> ebx     , 0
         | (S n)::_                      -> S (n+1) , n+1
         | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
-        | _                             -> S 0     , 1
+        | (R n)::_                      -> S 0     , 1
+        | _                             -> failwith "couldn't allocate"
         in
         allocate' stack
       in
