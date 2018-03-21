@@ -7,8 +7,11 @@ RC=../src/rc.opt
 check: $(TESTS)
 
 $(TESTS): %: %.expr
-#	@$(RC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
+	#@echo 'testing asm'
+	#@$(RC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
+	@echo 'testing expr eval'
 	@cat $@.input | $(RC) -i $< > $@.log && diff $@.log orig/$@.log
+	@echo 'testing SM eval'
 	@cat $@.input | $(RC) -s $< > $@.log && diff $@.log orig/$@.log
 
 clean:
