@@ -1,4 +1,9 @@
-*~
+.depend
 *.cmi
 *.cmx
 *.o
+*.log
+*.opt
+*~
+~*
+*#
