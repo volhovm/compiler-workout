@@ -72,7 +72,7 @@ let show instr =
   | Pop    s           -> Printf.sprintf "\tpopl\t%s"      (opnd s)
   | Ret                -> "\tret"
   | Call   p           -> Printf.sprintf "\tcall\t%s" p
-  | Label  l           -> Printf.sprintf "%s:\n" l
+  | Label  l           -> Printf.sprintf "\n%s:" l
   | Jmp    l           -> Printf.sprintf "\tjmp\t%s" l
   | CJmp  (s , l)      -> Printf.sprintf "\tj%s\t%s" s l
 
@@ -89,20 +89,26 @@ open SM
 let rec compile env =
   let updenv (s,env') action = env', action s in
   let safeMov a b = [Mov (a,eax); Mov (eax,b)] in
+  let null x = Binop ("^", x, x) in
+  let flip x a b = x b a in (* what a shame not to have this in stdlib... *)
+  let isreg x = match x with R _ -> true | _ -> false in
+  let withreg x code = if isreg x then code x else [Mov (x,edx)] @ code edx in
   let compileStep env = function
     | CONST n -> updenv env#allocate            @@ fun s -> [Mov (L n, s)]
     | WRITE ->   updenv env#pop                 @@ fun s -> [Push s; Call "Lwrite"; Pop eax]
     | READ ->    updenv env#allocate            @@ fun s -> [Call "Lread"; Mov (eax, s)]
     | LD x ->    updenv (env#global x)#allocate @@ fun s -> safeMov (M (env#loc x)) s
     | ST x ->    updenv (env#global x)#pop      @@ fun s -> safeMov s (M (env#loc x))
+    | LABEL l    -> env, [Label l]
+    | JMP l      -> env, [Jmp l]
+    | CJMP (s,l) -> updenv (env#pop) @@ flip withreg @@ fun x -> [Binop ("!!", x, x); CJmp (s,l)]
     | BINOP op ->
        let rhs, lhs, env' = env#pop2 in
        let newvar, env'' = env'#allocate in
-       let null x = Binop ("^", x, x) in
        let binopCmp setArg =
-         [Mov (rhs, edx);
-          null eax;
-          Binop ("cmp", edx, lhs);
+         withreg rhs @@ fun x ->
+         [null eax;
+          Binop ("cmp", x, lhs);
           Set (setArg, "%al");
           Mov (eax, newvar)] in
        let convBin dest =
@@ -112,7 +118,7 @@ let rec compile env =
           Mov (eax, dest)] in
        env'',
        match op with
-         | "+" | "-" | "*" -> [Mov (lhs, eax); Binop (op, rhs, eax); Mov (eax, newvar)]
+         | "+" | "-" | "*" -> withreg lhs (fun x -> [Binop (op, rhs, x); Mov (x, newvar)])
          | "/" | "%"       -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov ((if op = "/" then eax else edx), newvar)]
          | "<"  -> binopCmp "L"
          | "<=" -> binopCmp "LE"
@@ -121,7 +127,7 @@ let rec compile env =
          | "==" -> binopCmp "E"
          | "!=" -> binopCmp "NE"
          | "&&" | "!!" -> convBin lhs @ convBin rhs @
-                            [Mov (lhs, eax); Binop (op, rhs, eax); Mov (eax, newvar)]
+                          withreg lhs (fun x -> [Binop (op, rhs, x); Mov (x, newvar)])
          | x -> failwith ("binop not supported: " ^ x)
   in List.fold_left (fun (env,acc) i ->
                      (* Bifunctors maybe? *)
@@ -211,4 +217,4 @@ let build stmt name =
   Printf.fprintf outf "%s" (genasm stmt);
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
-  Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
+  Sys.command (Printf.sprintf "gcc -m32 -g -F dwarf -o %s %s/runtime.o %s.s" name inc name)

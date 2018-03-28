@@ -53,8 +53,8 @@ module Expr =
             | "<=" -> fromBool (x <= y)
             | ">"  -> fromBool (x > y)
             | ">=" -> fromBool (x >= y)
-            | "==" -> fromBool (x == y)
-            | "!=" -> fromBool (x != y)
+            | "==" -> fromBool (x = y)
+            | "!=" -> fromBool (x <> y)
             | "&&" -> fromBool (toBool x && toBool y)
             | "!!" -> fromBool (toBool x || toBool y)
             | x -> failwith (Printf.sprintf "eval: incorrect op: %s" x)
@@ -115,7 +115,7 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) (* add yourself *)  with show
+    (* loop with a post-condition       *) | Until  of t * Expr.t
 
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = Expr.state * int list * int list
@@ -131,6 +131,16 @@ module Stmt =
               | Write expr -> (s0, i, o @ [Expr.eval s0 expr])
               | Assign (x, expr) -> (Expr.update x (Expr.eval s0 expr) s0, i, o)
               | Seq (l,r) -> eval (eval s l) r
+              | If (e,l,r) -> if Expr.eval s0 e <> 0 then eval s l else eval s r
+              | While (e, t') -> if Expr.eval s0 e <> 0
+                                 then eval s (Seq (t', t))
+                                 else s
+              | Until (t',e) ->
+                 let ((s0',_,_) as s') = eval s t' in
+                 if Expr.eval s0' e <> 0
+                 then s'
+                 else eval s' t
+              | Skip -> s
 
     (* Statement parser *)
     ostap (
@@ -139,9 +149,21 @@ module Stmt =
                [| `Righta, [ostap (";"), fun s1 s2 -> Seq (s1, s2)] |]
                pOne
               );
-      pOne: -"read" -"(" v:IDENT -")" { Read v }
-          | -"write" -"(" e:!(Expr.parse) -")" { Write e }
-          | v:IDENT -":=" e:!(Expr.parse) { Assign (v,e) }
+      pOne: %"read" -"(" v:IDENT -")" { Read v }
+          | %"write" -"(" e:!(Expr.parse) -")" { Write e }
+          | multiIf
+          | %"while" e:!(Expr.parse) %"do" s:parse %"od" { While (e,s) }
+          | %"for" init:parse -"," cond:!(Expr.parse) -"," upd:parse %"do" a:parse %"od" { Seq (init,While(cond,Seq(a,upd))) }
+          | %"repeat" s:parse %"until" e:!(Expr.parse) { Until (s,e) }
+          | %"skip" { Skip }
+          | v:IDENT -":=" e:!(Expr.parse) { Assign (v,e) };
+
+      multiIf: %"if" i:nested %"fi" { i };
+      nested: e:!(Expr.parse) %"then" s1:parse s2:multiIfElse { If (e, s1, s2) };
+      multiIfElse: %"else" s2:parse { s2 }
+                 | %"elif" n:nested { n }
+                 | "" { Skip }
+
     )
 
   end
