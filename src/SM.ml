@@ -31,9 +31,17 @@ type config = (prg * State.t) list * int list * Stmt.config
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
  *)
-let rec eval env ((cstack,stack,((s,i,o) as sconf)) as conf) prg = match prg with
+let rec eval env ((cstack,stack,((s,i,o) as sconf)) as conf) prg =
+  match prg with
   | [] -> conf
   | JMP l :: _ -> eval env conf (env#labeled l)
+  | CALL l :: xs ->
+     eval env ((xs,s)::cstack,stack,sconf) (env#labeled l)
+  | END :: _ ->
+     (match cstack with
+      | (nextcode,sprev)::cstack' ->
+         eval env (cstack',stack,(State.leave s sprev,i,o)) nextcode
+      | [] -> conf)
   | CJMP (c, l) :: xs ->
      (match stack with
       | (a::b)    ->
@@ -52,14 +60,25 @@ let rec eval env ((cstack,stack,((s,i,o) as sconf)) as conf) prg = match prg wit
        | READ -> (match i with
                     | (i0::ixs) -> (cstack, i0 :: stack, (s,ixs,o))
                     | _  -> failwith "eval.READ: input stream is empty")
-       | WRITE -> (match stack with
+       | WRITE ->
+          (match stack with
                      | (a::xs) -> (cstack, stack,(s,i,o@[a]))
                      | _       -> failwith "eval.WRITE: can't read from stack")
-       | LD y -> (cstack,(State.lookup s y)::stack,sconf)
+       | LD y -> (cstack,(State.eval s y)::stack,sconf)
        | ST y -> (match stack with
                   | (a::xs) -> (cstack, xs, (Language.State.update y a s, i, o))
                   | _ -> failwith "eval.ST: stack is empty")
        | LABEL _ -> conf
+       | BEGIN (vars,locals) ->
+          let rec zip' acc = (function
+                               | (st,[]) -> stack, acc
+                               | ([],_) -> failwith "BEGIN: stack is too empty"
+                               | (st::stx,vr::vrx) -> zip' ((st,vr) :: acc) (stx, vrx)) in
+          let newstack,assocVars = zip' [] (stack, vars) in
+          let newS = List.fold_left (fun s' (v,x) -> State.update x v s')
+                                    (State.enter s (vars @ locals))
+                                    assocVars
+          in (cstack,newstack, (newS,i,o))
        | _       -> failwith "sm eval: can't happen"
      in eval env s' xs
 
@@ -69,7 +88,7 @@ let rec eval env ((cstack,stack,((s,i,o) as sconf)) as conf) prg = match prg wit
 
    Takes a program, an input stream, and returns an output stream this program calculates
 *)
-let run p i =
+let run (p : prg) (i : int list) : int list =
   let module M = Map.Make (String) in
   let rec make_map m = function
   | []              -> m
@@ -77,7 +96,8 @@ let run p i =
   | _ :: tl         -> make_map m tl
   in
   let m = make_map M.empty p in
-  let (_, _, (_, _, o)) = eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [])) p in o
+  let (_, _, (_, _, o)) =
+    eval (object method labeled l = M.find l m end) ([], [], (State.empty, i, [])) p in o
 
 (* Stack machine compiler
 
@@ -86,7 +106,7 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let rec compile stmt0 =
+let rec compile (defs,stmt0) : prg =
   let mkl s n = "l_" ^ s ^ (string_of_int n)
   in let rec compileExpr e = match e with
           | Language.Expr.Const n -> [CONST n]
@@ -116,6 +136,15 @@ let rec compile stmt0 =
         let l1 = mkl "unt" n in
         let (n', s') = compileStmt (n+1) s in
         (n', [LABEL l1] @ s' @ compileExpr e @ [CJMP ("z", l1)])
+     | Language.Stmt.Call (l,args) ->
+        let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
+        in (n, ax @ [CALL ("fun_" ^ l)])
+     in let rec compileDef n (fname,(args,locals,body)) =
+        let (n', c) = compileStmt n body in
+        (n', [LABEL ("fun_" ^ fname); BEGIN (args, locals)] @ c @ [END])
 
-  in let (_, res) = compileStmt 0 stmt0
+  in let (_, res) =
+       List.fold_left (fun (n,c) d -> let (n',c') = compileDef n d in (n',c @ c'))
+                      (let (n,c) = compileStmt 0 stmt0 in (n,c@[END]))
+                      defs
   in res

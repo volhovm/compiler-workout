@@ -15,23 +15,26 @@ module State =
     type t = {g : string -> int; l : string -> int; scope : string list}
 
     (* Empty state *)
-    let empty = failwith "Not implemented"
+    let empty = let e = fun x -> failwith ("can't resolve variable " ^ x)
+                in { g = e; l = e; scope = [] }
 
     (* Update: non-destructively "modifies" the state s by binding the variable x
        to value v and returns the new state w.r.t. a scope
     *)
-    let update x v s = failwith "Not implemented"
+    let update (x : string) (v : int) (s : t) : t =
+      let upd fallback = fun y -> if y = x then v else fallback y in
+      if List.mem x s.scope
+          then { s with l = upd s.l }
+          else { s with g = upd s.g }
 
     (* Evals a variable in a state w.r.t. a scope *)
-    let eval s x = failwith "Not implemented"
+    let eval s x = if List.mem x s.scope then s.l x else s.g x
 
     (* Creates a new scope, based on a given state *)
-    let enter st xs = failwith "Not implemented"
+    let enter s xs = { empty with g = s.g; scope = xs }
 
     (* Drops a scope *)
-    let leave st st' = failwith "Not implemented"
-
-    let lookup st v = failwith "Not implemented"
+    let leave sinner souter = { souter with g = sinner.g }
   end
 
 (* Simple expressions: syntax and semantics *)
@@ -84,7 +87,7 @@ module Expr =
     *)
     let rec eval (s:State.t) (e:t) : int = match e with
                 | Const i -> i
-                | Var v -> State.lookup s v
+                | Var v -> State.eval s v
                 | Binop (op, l, r) ->
                   let matchOp (f : int -> int -> int) = f (eval s l) (eval s r)
                   in matchOp @@ evalbinop op
@@ -100,9 +103,9 @@ module Expr =
                ops
 
     ostap (
-      parse: pBinop | pLeaf;
+      parse: pBinop;
 
-      pLeaf: d:DECIMAL { Const d } | x:IDENT { Var x } | -"(" parse -")" | pBinop;
+      pLeaf: x:IDENT { Var x } | d:DECIMAL { Const d } | -"(" parse -")" ;
 
       pBinop: !(Ostap.Util.expr
         (fun x -> x)
@@ -147,21 +150,36 @@ module Stmt =
 
        which returns a list of formal parameters, local variables, and a body for given definition
     *)
-    let rec eval ((s0,i,o) as s) t = match t with
-              | Read x -> (State.update s0 x (List.hd i) s0, List.tl i, o)
+    let rec eval env ((s0,i,o) as s) t = match t with
+              | Read x -> (State.update x (List.hd i) s0, List.tl i, o)
               | Write expr -> (s0, i, o @ [Expr.eval s0 expr])
-              | Assign (x, expr) -> (State.update s0 x (Expr.eval s0 expr) s0, i, o)
-              | Seq (l,r) -> eval (eval s l) r
-              | If (e,l,r) -> if Expr.eval s0 e <> 0 then eval s l else eval s r
+              | Assign (x, expr) -> (State.update x (Expr.eval s0 expr) s0, i, o)
+              | Seq (l,r) -> eval env (eval env s l) r
+              | If (e,l,r) -> if Expr.eval s0 e <> 0 then eval env s l else eval env s r
               | While (e, t') -> if Expr.eval s0 e <> 0
-                                 then eval s (Seq (t', t))
+                                 then eval env s (Seq (t', t))
                                  else s
               | Until (t',e) ->
-                 let ((s0',_,_) as s') = eval s t' in
+                 let ((s0',_,_) as s') = eval env s t' in
                  if Expr.eval s0' e <> 0
                  then s'
-                 else eval s' t
+                 else eval env s' t
               | Skip -> s
+              | Call (func,argVals) ->
+                 let (args,locals,body) = env func in
+
+                 if List.length args != List.length argVals
+                 then failwith "can't call function: number of args do not match"
+                 else
+                 (* new state with local vars assigned *)
+                 let sinner : State.t =
+                   List.fold_left
+                     (fun s (x,v) -> State.update x (Expr.eval s0 v) s)
+                     (State.enter s0 (args @ locals))
+                     (List.combine args argVals) in
+                 let (s',i',o') =
+                   eval env (sinner,i,o) body in
+                 (State.leave s' s0,i',o')
 
     (* Statement parser *)
     ostap (
@@ -170,14 +188,17 @@ module Stmt =
                [| `Righta, [ostap (";"), fun s1 s2 -> Seq (s1, s2)] |]
                pOne
               );
-      pOne: %"read" -"(" v:IDENT -")" { Read v }
-          | %"write" -"(" e:!(Expr.parse) -")" { Write e }
+      pOne: %"read" "(" v:IDENT ")" { Read v }
+          | %"write" "(" e:!(Expr.parse) ")" { Write e }
           | multiIf
           | %"while" e:!(Expr.parse) %"do" s:parse %"od" { While (e,s) }
           | %"for" init:parse -"," cond:!(Expr.parse) -"," upd:parse %"do" a:parse %"od" { Seq (init,While(cond,Seq(a,upd))) }
           | %"repeat" s:parse %"until" e:!(Expr.parse) { Until (s,e) }
           | %"skip" { Skip }
-          | v:IDENT -":=" e:!(Expr.parse) { Assign (v,e) };
+          | x:IDENT n:( ":=" e:!(Expr.parse)               { Assign (x,e) }
+                      | "(" e:!(Util.list0 Expr.parse) ")" { Call (x,e) } )
+                    {n}
+          ;
 
       multiIf: %"if" i:nested %"fi" { i };
       nested: e:!(Expr.parse) %"then" s1:parse s2:multiIfElse { If (e, s1, s2) };
@@ -196,9 +217,11 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (
-      parse: empty {failwith "Not implemented"}
+      parse: %"fun" i:IDENT "(" v:ids ")" l:locals "{" b:!(Stmt.parse) "}" { (i,(v,l,b)) };
+      locals: x:(%"local" ids)? { match x with None -> [] | Some x -> x };
+      ident: IDENT;
+      ids: !(Util.list0 ident)
     )
-
   end
 
 (* The top-level definitions *)
@@ -212,7 +235,11 @@ type t = Definition.t list * Stmt.t
 
    Takes a program and its input stream, and returns the output stream
 *)
-let eval (defs, body) i = failwith "Not implemented"
+let eval ((defs, body) : t) (i : int list) : int list =
+  let (_,_,o) = Stmt.eval (fun x -> List.assoc x defs) (State.empty,i,[]) body
+  in o
 
 (* Top-level parser *)
-let parse = Stmt.parse
+ostap (
+  parse: d:(!(Definition.parse))* s:!(Stmt.parse) { (d,s) }
+)

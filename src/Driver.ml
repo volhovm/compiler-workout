@@ -6,7 +6,7 @@ let parse infile =
     (object
        inherit Matcher.t s
        inherit Util.Lexers.decimal s
-       inherit Util.Lexers.ident ["read"; "write"; "skip"; "if"; "then"; "else"; "fi"; "elif"; "while"; "do"; "od"; "repeat"; "until"; "for"] s
+       inherit Util.Lexers.ident ["read"; "write"; "skip"; "if"; "then"; "else"; "fi"; "elif"; "while"; "do"; "od"; "repeat"; "until"; "for"; "fun"; "local"] s
        inherit Util.Lexers.skip [
          Matcher.Skip.whitespaces " \t\n";
          Matcher.Skip.lineComment "--";
@@ -23,7 +23,7 @@ let main =
     let to_compile = not (interpret || stack) in
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
     match parse infile with
-    | `Ok prog ->
+    | `Ok (prog : Language.t) ->
       if to_compile
       then failwith "Not implemented yet"
         (*
@@ -38,10 +38,10 @@ let main =
             read (acc @ [r])
           with End_of_file -> acc
         in
-        let input = read [] in
+        let input : int list = read [] in
         let output =
           if interpret
-          then Language.eval ([], prog) input
+          then Language.eval prog input
           else SM.run (SM.compile prog) input
         in
         List.iter (fun i -> Printf.printf "%d\n" i) output
