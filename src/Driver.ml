@@ -24,6 +24,7 @@ let main =
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
     match parse infile with
     | `Ok (prog : Language.t) ->
+       (*Printf.eprintf "parsed!\n";*)
       if to_compile
       then failwith "Not implemented yet"
         (*

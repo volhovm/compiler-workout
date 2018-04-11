@@ -51,6 +51,12 @@ module Expr =
     (* binary operator  *) | Binop of string * t * t
     (* function call    *) | Call  of string * t list with show
 
+    let rec showexpr = function
+      | Const i -> string_of_int i
+      | Var v   -> "var " ^ v
+      | Binop (op,l,r) -> "(" ^ showexpr l ^ ") " ^ op ^" (" ^ showexpr r ^ ")"
+      | Call (f,args) -> "call " ^ f ^ "(" ^ (List.fold_left (fun s x -> s ^ showexpr x ^ ",") "" args) ^ ")"
+
     (* Available binary operators:
         !!                   --- disjunction
         &&                   --- conjunction
@@ -61,6 +67,14 @@ module Expr =
 
     (* The type of configuration: a state, an input stream, an output stream, an optional value *)
     type config = State.t * int list * int list * int option
+
+    (* fromMaybe *)
+    let fromSome = function | Some x -> x | None -> failwith "fromRes: failed to resolve None"
+
+    let rec show_list = function
+      | [] -> ""
+      | x::[] -> string_of_int x
+      | x::l -> string_of_int x ^ ", " ^ show_list l
 
     (* Expression evaluator
 
@@ -97,13 +111,25 @@ module Expr =
             | "!!" -> fromBool (toBool x || toBool y)
             | x -> failwith (Printf.sprintf "eval: incorrect op: %s" x)
 
-    let rec eval (s:State.t) (e:t) : int = match e with
-                | Const i -> i
-                | Var v -> State.eval s v
-                | Binop (op, l, r) ->
-                  let matchOp (f : int -> int -> int) = f (eval s l) (eval s r)
-                  in matchOp @@ evalbinop op
+    let rec evalCall env conf f args eval =
+      let (argVals,(st',i',o',_)) =
+        List.fold_left (fun (results,conf') e ->
+                        let ((_,_,_,vi) as conf'') = eval env conf' e
+                        in (fromSome vi :: results, conf''))
+                       ([], conf)
+                       args
+      in (env#definition env f (List.rev argVals) (st',i',o',None))
 
+    let rec eval env ((st,i,o,r) as conf : config) (e:t) : config =
+      let retSame x = (st,i,o,Some x) in
+      match e with
+          | Const x -> retSame x
+          | Var v -> retSame (State.eval st v)
+          | Binop (op, l, r) ->
+             let ((_,_,_,l') as conf1) = eval env conf l in
+             let ((st',i',o',r') as conf2) = eval env conf1 r in
+             (st',i',o', Some (evalbinop op (fromSome l') (fromSome r')))
+          | Call (f,args) -> evalCall env conf f args eval
 
     (* Expression parser. You can use the following terminals:
 
@@ -118,7 +144,10 @@ module Expr =
     ostap (
       parse: pBinop;
 
-      pLeaf: x:IDENT { Var x } | d:DECIMAL { Const d } | -"(" parse -")" ;
+      pLeaf: fooname:IDENT "(" args:!(Util.list0 parse) ")" { Call (fooname,args) }
+           | x:IDENT { Var x }
+           | d:DECIMAL { Const d }
+           | -"(" parse -")" ;
 
       pBinop: !(Ostap.Util.expr
         (fun x -> x)
@@ -150,6 +179,17 @@ module Stmt =
     (* return statement                 *) | Return of Expr.t option
     (* call a procedure                 *) | Call   of string * Expr.t list with show
 
+    let rec printstmt = function
+      | Read x -> "read " ^ x
+      | Write v -> "write " ^ Expr.showexpr v
+      | Assign (x,v) -> "assign " ^ x ^ " to " ^ Expr.showexpr v
+      | Seq _ -> "seq"
+      | Skip -> "skip"
+      | If (a,b,c) -> "if " ^ Expr.showexpr a ^ " " ^ printstmt b ^ " " ^ printstmt c
+      | While (a,b) -> "while " ^ Expr.showexpr a ^ " " ^ printstmt b
+      | Repeat _ -> "repeat"
+      | Return t -> "return " ^ (match t with | None -> "none" | Some x -> Expr.showexpr x)
+      | Call _ -> "call"
 
     (* Statement evaluator
 
@@ -158,36 +198,31 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The
        environment is the same as for expressions
     *)
-    let rec eval env ((s0,i,o,r) as s : Expr.config) k t = match t with
-              | Read x -> (State.update x (List.hd i) s0, List.tl i, o, r)
-              | Write expr -> (s0, i, o @ [Expr.eval s0 expr], r)
-              | Assign (x, expr) -> (State.update x (Expr.eval s0 expr) s0, i, o, r)
-              | Seq (l,r) -> eval env (eval env s k l) k r
-              | If (e,l,r) -> eval env s k (if Expr.eval s0 e <> 0 then l else r)
-              | While (e, t') -> if Expr.eval s0 e <> 0
-                                 then eval env s k (Seq (t', t))
-                                 else s
-              | Repeat (t',e) ->
-                 let ((s0',_,_,_) as s') = eval env s k t' in
-                 if Expr.eval s0' e <> 0
-                 then s'
-                 else eval env s' k t
-              | Skip -> s
-              | Call (func,argVals) ->
-                 let (args,locals,body) = env func in
-
-                 if List.length args != List.length argVals
-                 then failwith "can't call function: number of args do not match"
-                 else
-                 (* new state with local vars assigned *)
-                 let sinner : State.t =
-                   List.fold_left
-                     (fun s (x,v) -> State.update x (Expr.eval s0 v) s)
-                     (State.enter s0 (args @ locals))
-                     (List.combine args argVals) in
-                 let (s',i',o',_) =
-                   eval env (sinner,i,o,r) k body in
-                 (State.leave s' s0,i',o', r)
+    let rec eval env ((st,i,o,r) as conf : Expr.config) k t : Expr.config =
+      let rombeek s1 s2 = if s2 = Skip then s1 else Seq (s1,s2) in
+      let curry f (a, b) = f a b in
+      let dropr (st',i',o',r') = (st',i',o',None) in
+      let posteval e f =
+        (let (_,_,_,r') as c' = Expr.eval env conf e in
+         let (c'', k',t') = f c' (Expr.fromSome r') in
+         eval env c'' k' t') in
+      match (k,t) with
+      | (Skip, Skip) ->          conf
+      | (_, Skip) ->             eval env (dropr conf) Skip k
+      | (_, Assign (x, e)) ->    posteval e @@ fun (st',i',o',_) r' -> (State.update x r' st',i',o',None),Skip,k
+      | (_, Write e) ->          posteval e @@ fun (st',i',o',_) r' -> (st',i',(o' @ [r']),None),Skip,k
+      | (_, Read x) ->           eval env (State.update x (List.hd i) st, List.tl i, o, None) Skip k
+      | (_, Seq (l,r)) ->        eval env conf (rombeek r k) l
+      | (_, If (e,l,r)) ->       posteval e @@ fun c r' -> dropr c, k, (if r' <> 0 then l else r)
+      | (_, While (e, t')) ->    posteval e @@ fun c r' -> if r' <> 0
+                                                           then (dropr c,rombeek t k, t')
+                                                           else (dropr c,Skip,k)
+      | (_, Repeat (t', e)) ->   let conf' = eval env conf Skip t' in
+                                 let (st',i',o',r') = Expr.eval env conf' e in
+                                 curry (eval env (st',i',o',None)) @@ if (Expr.fromSome r') <> 0 then (Skip,k) else (k,t)
+      | (_, Call (func,args)) -> eval env (Expr.evalCall env conf func args Expr.eval) Skip k
+      | (_, Return None) ->      conf
+      | (_, Return (Some e)) ->  Expr.eval env conf e
 
     (* Statement parser *)
     ostap (
@@ -196,16 +231,17 @@ module Stmt =
                [| `Righta, [ostap (";"), fun s1 s2 -> Seq (s1, s2)] |]
                pOne
               );
-      pOne: %"read" "(" v:IDENT ")" { Read v }
-          | %"write" "(" e:!(Expr.parse) ")" { Write e }
+      pOne: %"read" "(" v:IDENT ")"                                { Read v }
+          | %"write" "(" e:!(Expr.parse) ")"                       { Write e }
           | multiIf
-          | %"while" e:!(Expr.parse) %"do" s:parse %"od" { While (e,s) }
-          | %"for" init:parse -"," cond:!(Expr.parse) -"," upd:parse %"do" a:parse %"od" { Seq (init,While(cond,Seq(a,upd))) }
-          | %"repeat" s:parse %"until" e:!(Expr.parse) { Repeat (s,e) }
-          | %"skip" { Skip }
-          | x:IDENT n:( ":=" e:!(Expr.parse)               { Assign (x,e) }
-                      | "(" e:!(Util.list0 Expr.parse) ")" { Call (x,e) } )
-                    {n}
+          | %"while" e:!(Expr.parse) %"do" s:parse %"od"           { While (e,s) }
+          | %"for" init:parse "," cond:!(Expr.parse) "," upd:parse
+            %"do" a:parse %"od"                                    { Seq (init,While(cond,Seq(a,upd))) }
+          | %"repeat" s:parse %"until" e:!(Expr.parse)             { Repeat (s,e) }
+          | %"return" e:(!(Expr.parse))?                           { Return e }
+          | %"skip"                                                { Skip }
+          | x:IDENT ":=" e:!(Expr.parse)                           { Assign (x,e) }
+          | fooname:IDENT "(" args:!(Util.list0 Expr.parse) ")"    { Call (fooname,args) }
           ;
 
       multiIf: %"if" i:nested %"fi" { i };
@@ -244,8 +280,24 @@ type t = Definition.t list * Stmt.t
    Takes a program and its input stream, and returns the output stream
 *)
 let eval ((defs, body) : t) (i : int list) : int list =
-  let (_,_,o,_) = Stmt.eval (fun x -> List.assoc x defs) (State.empty,i,[], Some 12345) 12345 body
-  in o
+  let module M = Map.Make (String) in
+  let m          = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in
+  let _, _, o, _ =
+    Stmt.eval
+      (object
+         method definition env f args (st, i, o, r) =
+           let xs, locs, s      = snd @@ M.find f m in
+           let st'              = List.fold_left (fun st (x, a) -> State.update x a st)
+                                                 (State.enter st (xs @ locs))
+                                                 (List.combine xs args) in
+           let st'', i', o', r' = Stmt.eval env (st', i, o, r) Stmt.Skip s in
+           (State.leave st'' st, i', o', r')
+       end)
+      (State.empty, i, [], None)
+      Stmt.Skip
+      body
+  in
+  o
 
 (* Top-level parser *)
 ostap (
