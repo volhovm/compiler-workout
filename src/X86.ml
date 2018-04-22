@@ -1,9 +1,13 @@
 (* X86 codegeneration interface *)
 
+open Stdlib
+open List
+
 (* The registers: *)
 let regs = [|"%ebx"; "%ecx"; "%esi"; "%edi"; "%eax"; "%edx"; "%ebp"; "%esp"|]
 
 (* We can not freely operate with all register; only 3 by now *)
+(* Actually, 'allocate' is broken so 4 registers are used *)
 let num_of_regs = Array.length regs - 5
 
 (* We need to know the word size to calculate offsets correctly *)
@@ -25,6 +29,10 @@ let eax = R 4
 let edx = R 5
 let ebp = R 6
 let esp = R 7
+
+let showopnd = function
+  | (R i) -> Printf.sprintf "R %d" i
+  | _ -> Printf.sprintf "Otheropnd"
 
 (* Now x86 instruction (we do not need all of them): *)
 type instr =
@@ -93,20 +101,52 @@ open SM
 *)
 let rec compile env code =
   let updenv (s,env') action = env', action s in
-  let safeMov a b = [Mov (a,eax); Mov (eax,b)] in
   let null x = Binop ("^", x, x) in
-  let flip x a b = x b a in (* what a shame not to have this in stdlib... *)
   let isreg x = match x with R _ -> true | _ -> false in
+  let safeMov a b =
+    if a = b then [] else
+    if not (isreg a || isreg b) then [Mov (a,eax); Mov (eax,b)] else [Mov (a, b)] in
   let withreg x code' = if isreg x then code' x else [Mov (x,edx)] @ code' edx in
   let compileStep env = function
-    | CONST n -> updenv env#allocate            @@ fun s -> [Mov (L n, s)]
-    | WRITE ->   updenv env#pop                 @@ fun s -> [Push s; Call "Lwrite"; Pop eax]
-    | READ ->    updenv env#allocate            @@ fun s -> [Call "Lread"; Mov (eax, s)]
-    | LD x ->    updenv (env#global x)#allocate @@ fun s -> safeMov (env#loc x) s
-    | ST x ->    updenv (env#global x)#pop      @@ fun s -> safeMov s (env#loc x)
-    | LABEL l    -> env, [Label l]
-    | JMP l      -> env, [Jmp l]
-    | CJMP (s,l) -> updenv (env#pop) @@ flip withreg @@ fun x -> [Binop ("!!", x, x); CJmp (s,l)]
+    | CONST n         -> updenv env#allocate            @@ fun s -> [Mov (L n, s)]
+    | WRITE           -> updenv env#pop                 @@ fun s -> [Push s; Call "Lwrite"; Pop eax]
+    | READ            -> updenv env#allocate            @@ fun s -> [Call "Lread"; Mov (eax, s)]
+    | LD x            -> updenv (env#global x)#allocate @@ fun s -> safeMov (env#loc x) s
+    | ST x            -> updenv (env#global x)#pop      @@ fun s -> safeMov s (env#loc x)
+    | LABEL l         -> env, [Label l]
+    | JMP l           -> env, [Jmp l]
+    | CJMP (s,l)      -> updenv (env#pop) @@ flip withreg @@ fun x -> [Binop ("!!", x, x); CJmp (s,l)]
+    | CALL (l,n,p)    ->
+       let push = fun x -> Push x in (* Because in ocaml constructors are not functions *)
+       let passargs, env' =
+         if n == 0
+         then [], env
+         else first (rev % map push) (env#popMany n) in
+       let lreg = env'#live_registers in
+       let saveregs = map push lreg in
+       let restregs = rev @@ map (fun x -> Pop x) lreg in
+       let cleanup = if n == 0 then [] else [Binop ("+",L (n*word_size),esp)] in
+       let env'', retVar = if p then env', [] else updenv env'#allocate (fun s -> [Mov (eax, s)]) in
+       env'', saveregs @
+              [Meta "#passing args.."] @
+              passargs @ [Meta "#calling"] @
+              [Call l] @
+              cleanup @
+              [Meta "#restoring"] @
+              restregs @
+              [Meta "#retval"] @
+              retVar
+    | BEGIN (l,vr,ls) ->
+       let env' = env#enter l vr ls in
+       let prologue = [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ (env'#lsize)), esp)] in
+       env', prologue
+    | RET p           -> if p then updenv (env#pop) @@ fun s -> [Mov (s,eax); Jmp env#epilogue]
+                         else env, [Jmp env#epilogue]
+    | END             ->
+       env,
+       [Label (env#epilogue); Mov (ebp, esp); Pop ebp; Ret] @ (* epilogue *)
+       (* ftp://ftp.gnu.org/old-gnu/Manuals/gas/html_chapter/as_7.html#SEC120 *)
+       [Meta (Printf.sprintf "\t.set %s , %d" (env#lsize) (env#allocated * word_size))]
     | BINOP op ->
        let rhs, lhs, env' = env#pop2 in
        let newvar, env'' = env'#allocate in
@@ -122,8 +162,8 @@ let rec compile env code =
           Set ("NE", "%al");
           Mov (eax, dest)] in
        env'',
-       match op with
-         | "+" | "-" | "*" -> withreg lhs (fun x -> [Binop (op, rhs, x); Mov (x, newvar)])
+         (match op with
+         | "+" | "-" | "*" -> withreg lhs (fun x -> Binop (op, rhs, x) :: safeMov x newvar)
          | "/" | "%"       -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov ((if op = "/" then eax else edx), newvar)]
          | "<"  -> binopCmp "L"
          | "<=" -> binopCmp "LE"
@@ -133,22 +173,19 @@ let rec compile env code =
          | "!=" -> binopCmp "NE"
          | "&&" | "!!" -> convBin lhs @ convBin rhs @
                           withreg lhs (fun x -> [Binop (op, rhs, x); Mov (x, newvar)])
-         | x -> failwith ("binop not supported: " ^ x)
-  in List.fold_left (fun (env,acc) i ->
-                     (* Bifunctors maybe? *)
-                     let e',a' = compileStep env i
-                     in e', acc @ a') (env,[]) code
+         | x -> failwith ("binop not supported: " ^ x))
+  in (*Printf.eprintf "length of code: %d\n" (length code);*)
+      foldl (fun (env,acc) i -> (*Printf.eprintf "%s\n" (SM.showi i);*)
+                               second (fun x -> acc @ x) (compileStep env i))
+           (env,[])
+           code
 
 (* A set of strings *)
 
 module S = Set.Make (String)
 
-(* Oh my god, ocaml doesn't have [a..b] notation.....................*)
-let rec buildList n i = if i < n then i::(buildList n (i+1)) else [i]
-let listInit len f = List.map f (buildList 0 (len - 1))
-
 (* Environment implementation *)
-let make_assoc l = List.combine l (listInit (List.length l) (fun x -> x))
+let make_assoc l = combine l (listInit (length l) id)
 
 class env =
   object (self)
@@ -161,9 +198,9 @@ class env =
 
     (* gets a name for a global variable *)
     method loc x =
-      try S (- (List.assoc x args)  -  1)
+      try S (- (assoc x args)  -  1)
       with Not_found ->
-        try S (List.assoc x locals) with Not_found -> M ("global_" ^ x)
+        try S (assoc x locals) with Not_found -> M ("global_" ^ x)
 
 
     (* allocates a fresh position on a symbolic stack *)
@@ -184,10 +221,12 @@ class env =
     method push y = {< stack = y::stack >}
 
     (* pops one operand from the symbolic stack *)
-    method pop = let x::stack' = stack in x, {< stack = stack' >}
+    method pop = hd stack, {< stack = tl' "pop" stack >}
 
     (* pops two operands from the symbolic stack *)
     method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
+
+    method popMany n = take n stack, {< stack = drop n stack >}
 
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
@@ -200,7 +239,11 @@ class env =
 
     (* enters a function *)
     method enter f a l =
-      {< stack_slots = List.length l; stack = []; locals = make_assoc l; args = make_assoc a; fname = f >}
+      {< stack_slots = length l;
+         stack = [];
+         locals = make_assoc l;
+         args = make_assoc a;
+         fname = f >}
 
     (* returns a label for the epilogue *)
     method epilogue = Printf.sprintf "L%s_epilogue" fname
@@ -210,7 +253,7 @@ class env =
 
     (* returns a list of live registers *)
     method live_registers =
-      List.filter (function R _ -> true | _ -> false) stack
+      filter (function R _ -> true | _ -> false) stack
 
   end
 
@@ -224,9 +267,9 @@ let genasm (ds, stmt) =
       (new env)
       ((LABEL "main") :: (BEGIN ("main", [], [])) :: SM.compile (ds, stmt))
   in
-  let data = Meta "\t.data" :: (List.map (fun s -> Meta (s ^ ":\t.int\t0")) env#globals) in
+  let data = Meta "\t.data" :: (map (fun s -> Meta (s ^ ":\t.int\t0")) env#globals) in
   let asm = Buffer.create 1024 in
-  List.iter
+  iter
     (fun i -> Buffer.add_string asm (Printf.sprintf "%s\n" @@ show i))
     (data @ [Meta "\t.text"; Meta "\t.globl\tmain"] @ code);
   Buffer.contents asm

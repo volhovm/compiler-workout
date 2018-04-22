@@ -6,6 +6,7 @@ open GT
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
 open Combinators
+open Stdlib
 
 (* States *)
 module State =
@@ -55,7 +56,7 @@ module Expr =
       | Const i -> string_of_int i
       | Var v   -> "var " ^ v
       | Binop (op,l,r) -> "(" ^ showexpr l ^ ") " ^ op ^" (" ^ showexpr r ^ ")"
-      | Call (f,args) -> "call " ^ f ^ "(" ^ (List.fold_left (fun s x -> s ^ showexpr x ^ ",") "" args) ^ ")"
+      | Call (f,args) -> "call " ^ f ^ "(" ^ (foldl (fun s x -> s ^ showexpr x ^ ",") "" args) ^ ")"
 
     (* Available binary operators:
         !!                   --- disjunction
@@ -68,8 +69,6 @@ module Expr =
     (* The type of configuration: a state, an input stream, an output stream, an optional value *)
     type config = State.t * int list * int list * int option
 
-    (* fromMaybe *)
-    let fromSome = function | Some x -> x | None -> failwith "fromRes: failed to resolve None"
 
     let rec show_list = function
       | [] -> ""
@@ -113,11 +112,11 @@ module Expr =
 
     let rec evalCall env conf f args eval =
       let (argVals,(st',i',o',_)) =
-        List.fold_left (fun (results,conf') e ->
-                        let ((_,_,_,vi) as conf'') = eval env conf' e
-                        in (fromSome vi :: results, conf''))
-                       ([], conf)
-                       args
+        foldl (fun (results,conf') e ->
+               let ((_,_,_,vi) as conf'') = eval env conf' e
+               in (fromSome vi :: results, conf''))
+              ([], conf)
+              args
       in (env#definition env f (List.rev argVals) (st',i',o',None))
 
     let rec eval env ((st,i,o,r) as conf : config) (e:t) : config =
@@ -150,7 +149,7 @@ module Expr =
            | -"(" parse -")" ;
 
       pBinop: !(Ostap.Util.expr
-        (fun x -> x)
+        id
         [|
           `Lefta, mkBinop ["!!"];
           `Lefta, mkBinop ["&&"];
@@ -204,7 +203,7 @@ module Stmt =
       let dropr (st',i',o',r') = (st',i',o',None) in
       let posteval e f =
         (let (_,_,_,r') as c' = Expr.eval env conf e in
-         let (c'', k',t') = f c' (Expr.fromSome r') in
+         let (c'', k',t') = f c' (fromSome r') in
          eval env c'' k' t') in
       match (k,t) with
       | (Skip, Skip) ->          conf
@@ -219,7 +218,7 @@ module Stmt =
                                                            else (dropr c,Skip,k)
       | (_, Repeat (t', e)) ->   let conf' = eval env conf Skip t' in
                                  let (st',i',o',r') = Expr.eval env conf' e in
-                                curry (eval env (st',i',o',None)) @@ if (Expr.fromSome r') <> 0 then (Skip,k) else (k,t)
+                                curry (eval env (st',i',o',None)) @@ if (fromSome r') <> 0 then (Skip,k) else (k,t)
       | (_, Call (func,args)) -> eval env (Expr.evalCall env conf func args Expr.eval) Skip k
       | (_, Return None) ->      conf
       | (_, Return (Some e)) ->  Expr.eval env conf e
@@ -227,7 +226,7 @@ module Stmt =
     (* Statement parser *)
     ostap (
       parse: !(Ostap.Util.expr
-               (fun x -> x)
+               id
                [| `Righta, [ostap (";"), fun s1 s2 -> Seq (s1, s2)] |]
                pOne
               );
@@ -281,15 +280,15 @@ type t = Definition.t list * Stmt.t
 *)
 let eval ((defs, body) : t) (i : int list) : int list =
   let module M = Map.Make (String) in
-  let m          = List.fold_left (fun m ((name, _) as def) -> M.add name def m) M.empty defs in
+  let m          = foldl (fun m ((name, _) as def) -> M.add name def m) M.empty defs in
   let _, _, o, _ =
     Stmt.eval
       (object
          method definition env f args (st, i, o, r) =
            let xs, locs, s      = snd @@ M.find f m in
-           let st'              = List.fold_left (fun st (x, a) -> State.update x a st)
-                                                 (State.enter st (xs @ locs))
-                                                 (List.combine xs args) in
+           let st'              = foldl (fun st (x, a) -> State.update x a st)
+                                        (State.enter st (xs @ locs))
+                                        (List.combine xs args) in
            let st'', i', o', r' = Stmt.eval env (st', i, o, r) Stmt.Skip s in
            (State.leave st'' st, i', o', r')
        end)

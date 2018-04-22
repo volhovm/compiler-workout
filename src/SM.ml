@@ -1,5 +1,6 @@
 open GT
 open Language
+open Stdlib
 
 (* The type for the stack machine instructions *)
 @type insn =
@@ -20,6 +21,7 @@ open Language
 (* The type for the stack machine program *)
 type prg = insn list
 
+let showi i = show(insn) i
 let print_prg p = List.iter (fun i -> Printf.eprintf "%s\n" (show(insn) i)) p
 
 (* The type for the stack machine configuration: control stack, stack and configuration from statement
@@ -44,7 +46,7 @@ let rec eval env ((cstack,stack,((s,i,o,r) as sconf)) as conf) prg =
   | JMP l :: _ -> eval env conf (env#labeled l)
   | CALL (l,_,_) :: xs ->
      eval env ((xs,s)::cstack,stack,sconf) (env#labeled l)
-  | END :: _ ->
+  | END :: _ | RET _ :: _->
      (match cstack with
       | (nextcode,sprev)::cstack' ->
          eval env (cstack',stack,(State.leave s sprev,i,o,r)) nextcode
@@ -122,7 +124,7 @@ let rec compile (defs,stmt0) : prg =
           | Language.Expr.Binop (op,x,y) -> compileExpr x @ compileExpr y @ [BINOP op]
           | Language.Expr.Call (l,args) ->
             let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
-            in ax @ [CALL ("fun_" ^ l,failwith "todo",failwith "todo")]
+            in ax @ [CALL ("fun_" ^ l,List.length args,false)]
   in let rec compileStmt n = function
      | Language.Stmt.Assign (x,e) -> (n, compileExpr e @ [ST x])
      | Language.Stmt.Read z -> (n, [READ;ST z])
@@ -132,7 +134,8 @@ let rec compile (defs,stmt0) : prg =
         let (n2, r') = compileStmt n1 r in
         (n2, l' @ r')
      | Language.Stmt.Skip      -> (n, [])
-     | Language.Stmt.Return x -> (n, (match x with | None -> [] | Some y -> compileExpr y) @ [END])
+     | Language.Stmt.Return x ->
+        (n, (match x with | None -> [] | Some y -> compileExpr y) @ [RET (x <> None)])
      | Language.Stmt.If (e,l,r) ->
         let (n1, s1) = compileStmt n l in
         let l1 = "l_if" ^ (string_of_int n1) ^ "_1" in
@@ -150,10 +153,11 @@ let rec compile (defs,stmt0) : prg =
         (n', [LABEL l1] @ s' @ compileExpr e @ [CJMP ("z", l1)])
      | Language.Stmt.Call (l,args) ->
         let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
-        in (n, ax @ [CALL ("fun_" ^ l,failwith "todo",failwith "todo")])
+        in (n, ax @ [CALL ("fun_" ^ l,List.length args,true)])
      in let rec compileDef n (fname,(args,locals,body)) =
         let (n', c) = compileStmt n body in
-        (n', [LABEL ("fun_" ^ fname); BEGIN (failwith "todo",args, locals)] @ c @ [END])
+        let fname = "fun_" ^ fname in
+        (n', [LABEL fname; BEGIN (fname,args, locals)] @ c @ [END])
 
   in let (_, res) =
        List.fold_left (fun (n,c) d -> let (n',c') = compileDef n d in (n',c @ c'))
