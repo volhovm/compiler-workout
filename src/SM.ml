@@ -50,7 +50,7 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) pr
   | CALL (l,n,p) :: xs ->
      if (env#is_label l)
      then eval env ((xs,s)::cstack,stack,sconf) (env#labeled l)
-     else eval env (env#builtin conf (strDrop 4 l) n p) xs
+     else eval env (env#builtin conf l n p) xs
   | END :: _ | RET _ :: _->
      (match cstack with
       | (nextcode,sprev)::cstack' ->
@@ -143,14 +143,14 @@ let rec compile (defs,stmt0) : prg =
           | Language.Expr.Const n -> [CONST n]
           | Language.Expr.String s -> [STRING s]
           | Language.Expr.Array l ->
-             concatMap compileExpr (List.rev l) @ [CALL ("fun_$array",List.length l,false)]
+             concatMap compileExpr (List.rev l) @ [CALL ("$array",List.length l,false)]
           | Language.Expr.Var x -> [LD x]
           | Language.Expr.Binop (op,x,y) -> compileExpr x @ compileExpr y @ [BINOP op]
           | Language.Expr.Elem (a,ix) -> compileExpr ix @ compileExpr a @ [CALL ("fun_$elem",2,false)]
-          | Language.Expr.Length a -> compileExpr a @ [CALL ("fun_$length",1,false)]
+          | Language.Expr.Length a -> compileExpr a @ [CALL ("$length",1,false)]
           | Language.Expr.Call (l,args) ->
             let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
-            in ax @ [CALL ("fun_" ^ l,List.length args,false)]
+            in ax @ [CALL ("L" ^ l,List.length args,false)]
   in let rec compileStmt n = function
      | Language.Stmt.Assign (x,[],e) -> (n, compileExpr e @ [ST x])
      | Language.Stmt.Assign (x,ixs,e) -> (n, concatMap compileExpr ixs @
@@ -180,10 +180,10 @@ let rec compile (defs,stmt0) : prg =
         (n', [LABEL l1] @ s' @ compileExpr e @ [CJMP ("z", l1)])
      | Language.Stmt.Call (l,args) ->
         let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
-        in (n, ax @ [CALL ("fun_" ^ l,List.length args,true)])
+        in (n, ax @ [CALL ("L" ^ l,List.length args,true)])
      in let rec compileDef n (fname,(args,locals,body)) =
         let (n', c) = compileStmt n body in
-        let fname = "fun_" ^ fname in
+        let fname = "L" ^ fname in
         (n', [LABEL fname; BEGIN (fname,args, locals)] @ c @ [END])
 
   in let (_, res) =
