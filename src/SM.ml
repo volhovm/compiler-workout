@@ -146,7 +146,7 @@ let rec compile (defs,stmt0) : prg =
              concatMap compileExpr (List.rev l) @ [CALL ("$array",List.length l,false)]
           | Language.Expr.Var x -> [LD x]
           | Language.Expr.Binop (op,x,y) -> compileExpr x @ compileExpr y @ [BINOP op]
-          | Language.Expr.Elem (a,ix) -> compileExpr ix @ compileExpr a @ [CALL ("fun_$elem",2,false)]
+          | Language.Expr.Elem (a,ix) -> compileExpr ix @ compileExpr a @ [CALL ("$elem",2,false)]
           | Language.Expr.Length a -> compileExpr a @ [CALL ("$length",1,false)]
           | Language.Expr.Call (l,args) ->
             let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
