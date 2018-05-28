@@ -27,7 +27,8 @@ let print_prg p = List.iter (fun i -> Printf.eprintf "%s\n" (show(insn) i)) p
 (* The type for the stack machine configuration: control stack, stack and configuration from statement
    interpreter
 *)
-type config = (prg * State.t) list * Value.t list * Expr.config
+type econfig = State.t * int list * int list
+type config = (prg * State.t) list * Value.t list * econfig
 
 let printStack stack = Printf.eprintf "stack: %s\n" (Language.Expr.show_list stack)
 
@@ -38,25 +39,22 @@ let printStack stack = Printf.eprintf "stack: %s\n" (Language.Expr.show_list sta
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)
-let split n l =
-  let rec unzip (taken, rest) = function
-  | 0 -> (List.rev taken, rest)
-  | n -> let h::tl = rest in unzip (h::taken, tl) (n-1)
-  in
-  unzip ([], l) n
+let split n l = first List.rev (take n l, drop n l)
 
-let rec eval env ((cstack,(stack : Value.t list),((s,i,o,r) as sconf)) as conf) prg =
+let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) prg =
   (*printStack stack;*)
   (*(match prg with | x::_ -> Printf.eprintf ("Processing %s\n") (show(insn) x) | _ -> Printf.eprintf "");*)
   match prg with
   | [] -> conf
   | JMP l :: _ -> eval env conf (env#labeled l)
-  | CALL (l,_,_) :: xs ->
-     eval env ((xs,s)::cstack,stack,sconf) (env#labeled l)
+  | CALL (l,n,p) :: xs ->
+     if (env#is_label l)
+     then eval env ((xs,s)::cstack,stack,sconf) (env#labeled l)
+     else eval env (env#builtin conf (strDrop 4 l) n p) xs
   | END :: _ | RET _ :: _->
      (match cstack with
       | (nextcode,sprev)::cstack' ->
-         eval env (cstack',stack,(State.leave s sprev,i,o,r)) nextcode
+         eval env (cstack',stack,(State.leave s sprev,i,o)) nextcode
       | [] -> conf)
   | CJMP (c, l) :: xs ->
      (match stack with
@@ -76,8 +74,8 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o,r) as sconf)) as conf) 
                         | _           -> failwith "eval.BINOP: less then 2 args on the stack")
        | LD y -> (cstack,(State.eval s y)::stack,sconf)
        | ST y -> (match stack with
-                  | (a::xs) -> (cstack, xs, (Language.State.update y a s, i, o, r))
-                  | _ -> failwith "eval.ST: stack is empty")
+                  | (a::xs) -> (cstack, xs, (Language.State.update y a s, i, o))
+                  | _ -> failwith @@ "eval.ST: stack is empty: " ^ y)
        | LABEL _ -> conf
        | BEGIN (_,vars,locals) ->
           let rec zip' acc = (function
@@ -88,7 +86,7 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o,r) as sconf)) as conf) 
           let newS = List.fold_left (fun s' (v,x) -> State.update x v s')
                                     (State.enter s (vars @ locals))
                                     assocVars
-          in (cstack,newstack, (newS,i,o,r))
+          in (cstack,newstack, (newS,i,o))
        | _       -> failwith "sm eval: can't happen"
      in eval env s' xs
 
@@ -107,7 +105,7 @@ let run (p : prg) (i : int list) : int list =
   | _ :: tl         -> make_map m tl
   in
   let m = make_map M.empty p in
-  let (_, _, (_, _, o, _)) =
+  let (_, _, (_, _, o)) =
     eval
       (object
          method is_label l = M.mem l m
@@ -117,11 +115,11 @@ let run (p : prg) (i : int list) : int list =
            let args, stack' = split n stack in
            let (st, i, o, r) = Language.Builtin.eval (st, i, o, None) (List.rev args) f in
            let stack'' = if p then stack' else let Some r = r in r::stack' in
-           Printf.printf "Builtin: %s\n" f;
+           (*Printf.eprintf "Builtin: %s %B\n" f p;*)
            (cstack, stack'', (st, i, o))
        end
       )
-      ([], [], (State.empty, i, [], None))
+      ([], [], (State.empty, i, []))
       p
   in
   o

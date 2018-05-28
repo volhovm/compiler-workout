@@ -91,6 +91,7 @@ module Builtin =
     | "$array"   -> (st, i, o, Some (Value.of_array args))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))
+    | o -> failwith @@ Printf.sprintf "Builtin.eval no such builtin available: %s" o
 
   end
 
@@ -130,10 +131,7 @@ module Expr =
     type config = State.t * int list * int list * Value.t option
 
 
-    let rec show_list = function
-      | [] -> ""
-      | x::[] -> string_of_int x
-      | x::l -> string_of_int x ^ ", " ^ show_list l
+    let rec show_list l = "[" ^ (String.concat ", " @@ List.map Value.showVal l) ^ "]"
 
     (* Expression evaluator
 

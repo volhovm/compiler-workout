@@ -28,5 +28,15 @@ let rec buildList a b = if a < b
 
 (* Because i don't know how to upgrade ocaml to make List.init available :shrug: *)
 let listInit len f = List.map f (buildList 0 (len - 1))
+
+let strToList (s : string) : (char list) =
+    List.map (String.get s) (buildList 0 (String.length s - 1))
+let strFromList (l : char list) : string =
+    String.concat "" (List.map (String.make 1) l)
+
+let strDrop n = strFromList % drop n % strToList
+let strTake n = strFromList % take n % strToList
+
+(* Same problem as with listInit *)
 let stringInit (len : int) (f : int -> char) =
     String.concat "" (List.map (String.make 1 % f) (buildList 0 (len - 1)))
