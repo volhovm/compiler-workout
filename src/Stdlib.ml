@@ -25,6 +25,8 @@ let rec drop n l = if n == 0 then l else drop (n-1) (tl l)
 let rec take n l = if n == 0 then [] else hd l :: take (n-1) (tl l)
 let dropEnd n = List.rev % drop n % List.rev
 
+let splitAt n l = (take n l, drop n l)
+
 (* Yes, that's right -- no [a..b] notation :joy: *)
 let rec buildList a b = if a < b
                         then a::(buildList (a+1) b)
@@ -32,6 +34,8 @@ let rec buildList a b = if a < b
 
 (* Because i don't know how to upgrade ocaml to make List.init available :shrug: *)
 let listInit len f = List.map f (buildList 0 (len - 1))
+
+let concatMap f = List.concat % List.map f
 
 let strToList (s : string) : (char list) =
     List.map (String.get s) (buildList 0 (String.length s - 1))

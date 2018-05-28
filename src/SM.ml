@@ -39,11 +39,11 @@ let printStack stack = Printf.eprintf "stack: %s\n" (Language.Expr.show_list sta
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)
-let split n l = first List.rev (take n l, drop n l)
+let splitRev n l = first List.rev @@ splitAt n l
 
 let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) prg =
-  (*printStack stack;*)
-  (*(match prg with | x::_ -> Printf.eprintf ("Processing %s\n") (show(insn) x) | _ -> Printf.eprintf "");*)
+  (*printStack stack;
+  (match prg with | x::_ -> Printf.eprintf ("Processing %s\n") (show(insn) x) | _ -> Printf.eprintf "");*)
   match prg with
   | [] -> conf
   | JMP l :: _ -> eval env conf (env#labeled l)
@@ -69,6 +69,7 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) pr
   | x :: xs ->
      let (c' : config) = match x with
        | CONST c -> (cstack, (Value.Int c) :: stack, sconf)
+       | STRING s -> (cstack, (Value.String s) :: stack, sconf)
        | BINOP op -> (match stack with
                       | (b::a::c) -> let (s',i',o',r) = Language.Expr.evalBinop (s,i,o,None) op a b
                                      in (cstack, (fromSome r)::c, (s',i',o'))
@@ -77,6 +78,10 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) pr
        | ST y -> (match stack with
                   | (a::xs) -> (cstack, xs, (Language.State.update y a s, i, o))
                   | _ -> failwith @@ "eval.ST: stack is empty: " ^ y)
+       | STA (y, n) -> (match stack with
+                        | e::xs -> let (ixs,stack') = splitRev n xs
+                                   in (cstack,stack',(Stmt.update s y e ixs,i,o))
+                        | _ -> failwith "STA: stack didn't match")
        | LABEL _ -> conf
        | BEGIN (_,vars,locals) ->
           let rec zip' acc = (function
@@ -113,7 +118,7 @@ let run (p : prg) (i : int list) : int list =
          method labeled l = M.find l m
          method builtin (cstack, stack, (st, i, o)) f n p =
            let f = match f.[0] with 'L' -> String.sub f 1 (String.length f - 1) | _ -> f in
-           let args, stack' = split n stack in
+           let args, stack' = splitRev n stack in
            let (st, i, o, r) = Language.Builtin.eval (st, i, o, None) (List.rev args) f in
            let stack'' = if p then stack' else let Some r = r in r::stack' in
            (*Printf.eprintf "Builtin: %s %B\n" f p;*)
@@ -136,13 +141,21 @@ let rec compile (defs,stmt0) : prg =
   let mkl s n = "l_" ^ s ^ (string_of_int n)
   in let rec compileExpr e = match e with
           | Language.Expr.Const n -> [CONST n]
+          | Language.Expr.String s -> [STRING s]
+          | Language.Expr.Array l ->
+             concatMap compileExpr (List.rev l) @ [CALL ("fun_$array",List.length l,false)]
           | Language.Expr.Var x -> [LD x]
           | Language.Expr.Binop (op,x,y) -> compileExpr x @ compileExpr y @ [BINOP op]
+          | Language.Expr.Elem (a,ix) -> compileExpr ix @ compileExpr a @ [CALL ("fun_$elem",2,false)]
+          | Language.Expr.Length a -> compileExpr a @ [CALL ("fun_$length",1,false)]
           | Language.Expr.Call (l,args) ->
             let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
             in ax @ [CALL ("fun_" ^ l,List.length args,false)]
   in let rec compileStmt n = function
-     | Language.Stmt.Assign (x,ixs,e) -> (n, compileExpr e @ [ST x])
+     | Language.Stmt.Assign (x,[],e) -> (n, compileExpr e @ [ST x])
+     | Language.Stmt.Assign (x,ixs,e) -> (n, concatMap compileExpr ixs @
+                                             compileExpr e @
+                                             [STA (x,List.length ixs)])
      | Language.Stmt.Seq (l,r) ->
         let (n1,l') = compileStmt n l in
         let (n2, r') = compileStmt n1 r in
