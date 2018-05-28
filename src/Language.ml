@@ -87,7 +87,10 @@ module Builtin =
                                      | Value.Array  a -> List.nth a i
                                )
                     )
-    | "$length"  -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Array a -> List.length a | Value.String s -> String.length s)))
+    | "$length"  -> (st, i, o, Some (Value.of_int (match List.hd args with
+                                                   | Value.Array a -> List.length a
+                                                   | Value.String s -> String.length s
+                                                   | Value.Int i -> failwith @@ Printf.sprintf "$length called with int %d" i)))
     | "$array"   -> (st, i, o, Some (Value.of_array args))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))
@@ -118,6 +121,7 @@ module Expr =
       | Var v   -> "var " ^ v
       | Binop (op,l,r) -> "(" ^ showexpr l ^ ") " ^ op ^" (" ^ showexpr r ^ ")"
       | Call (f,args) -> "call " ^ f ^ "(" ^ (foldl (fun s x -> s ^ showexpr x ^ ",") "" args) ^ ")"
+      | x -> show(t) x
 
     (* Available binary operators:
         !!                   --- disjunction
@@ -130,7 +134,10 @@ module Expr =
     (* The type of configuration: a state, an input stream, an output stream, an optional value *)
     type config = State.t * int list * int list * Value.t option
 
+    (* Lens. LENS. L E  N        S    !! !  ! 1 1!!  1!  1     !  *)
+    let mod4 (s,i,o,r) f = (s,i,o,f r)
 
+    let rec show_list_int l = "[" ^ (String.concat ", " @@ List.map string_of_int l) ^ "]"
     let rec show_list l = "[" ^ (String.concat ", " @@ List.map Value.showVal l) ^ "]"
 
     (* Expression evaluator
@@ -147,9 +154,7 @@ module Expr =
        an returns a pair: the return value for the call and the resulting configuration
     *)
 
-    let evalbinop (op : string) (x0 : Value.t) (y0 : Value.t) : Value.t =
-      match (x0,y0,op) with
-      | (Int x, Int y,_) ->
+    let evalIntBinop (op : string) (x : int) (y : int) : int =
          (let fromBool (b : bool) : int = if b then 1 else 0 in
           let toBool (i : int) = match i with
                  | 0 -> false
@@ -168,10 +173,13 @@ module Expr =
                  | "!=" -> fromBool (x <> y)
                  | "&&" -> fromBool (toBool x && toBool y)
                  | "!!" -> fromBool (toBool x || toBool y)
-                 | o -> failwith (Printf.sprintf "eval: incorrect op: %s" o) in
-          Int res)
-      | (String s, Int i, _) -> failwith "TODO"
-      | (Array s, Int i, _) -> failwith "TODO"
+                 | o -> failwith (Printf.sprintf "evalIntBinop: incorrect op: %s" o) in
+          res)
+
+    let evalBinop (conf : config) (op : string) (x : Value.t) (y : Value.t) : config =
+      match (x,y,op) with
+      | (Int a, Int b, _) -> mod4 conf (const @@ Some (Value.Int (evalIntBinop op a b)))
+      | _ -> failwith "ntoeua"
 
     let rec evalCall env conf f args eval =
       let (argVals,(st',i',o',_)) =
@@ -186,11 +194,20 @@ module Expr =
       let retSame x = (st,i,o,Some x) in
       match e with
           | Const x -> retSame (Value.Int x)
+          | String s -> retSame (Value.String s)
+          | Array a -> mod4 (eval_list env conf a) (fun xs -> Some (Value.Array xs))
           | Var v -> retSame (State.eval st v)
           | Binop (op, l, r) ->
              let ((_,_,_,l') as conf1) = eval env conf l in
              let ((st',i',o',r') as conf2) = eval env conf1 r in
-             (st',i',o', Some (evalbinop op (fromSome l') (fromSome r')))
+             evalBinop (st',i',o',None) op (fromSome l') (fromSome r')
+          | Elem (l,r) ->
+             let ((_,_,_,r') as conf1) = eval env conf r in
+             let ((st',i',o',l') as conf2) = eval env conf1 l in
+             Builtin.eval conf2 [fromSome l'; fromSome r'] "$elem"
+          | Length a ->
+             let (st',i',o',r') = eval env conf a
+             in Builtin.eval (st',i',o',None) [fromSome r'] "$length"
           | Call (f,args) -> evalCall env conf f args eval
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
@@ -202,7 +219,7 @@ module Expr =
           ([], conf)
           xs
       in
-      (st, i, o, List.rev vs)
+      (st, i, o, List.rev vs) (* FIXME List.rev? *)
 
     (* Expression parser. You can use the following terminals:
 
@@ -217,11 +234,6 @@ module Expr =
     ostap (
       parse: pBinop;
 
-      pLeaf: fooname:IDENT "(" args:!(Util.list0 parse) ")" { Call (fooname,args) }
-           | x:IDENT { Var x }
-           | d:DECIMAL { Const d }
-           | -"(" parse -")" ;
-
       pBinop: !(Ostap.Util.expr
         id
         [|
@@ -231,7 +243,22 @@ module Expr =
           `Lefta, mkBinop ["+"; "-"];
           `Lefta, mkBinop ["*"; "/"; "%"]
         |]
-        pLeaf)
+        p2);
+
+      p2 : e:p3 ".length" { Length e }
+         | p3 ;
+
+      p3 : e:pLeaf ixs:(-"[" parse -"]")* { foldl (fun e ix -> Elem (e, ix)) e ixs }
+         | pLeaf ;
+
+      pLeaf: fooname:IDENT "(" args:!(Util.list0 parse) ")" { Call (fooname,args) }
+           | x:IDENT { Var x }
+           | s:STRING { String (strFromList @@ drop 1 @@ dropEnd 1 @@ strToList s) }
+           | c:CHAR { Const (Char.code c) }
+           | "[" elems:!(Util.list parse) "]" { Array elems }
+           | d:DECIMAL { Const d }
+           | -"(" parse -")"
+
     )
   end
 
@@ -252,16 +279,16 @@ module Stmt =
 
     let rec printstmt = function
       | Assign (x,ix,v) ->
-         "assign " ^ x ^ "ixs (" ^
+         "assign " ^ x ^ " [" ^
                               (String.concat "," (List.map Expr.showexpr ix)) ^
-                             ") to " ^ Expr.showexpr v
+                             "] to " ^ Expr.showexpr v
       | Seq _ -> "seq"
       | Skip -> "skip"
       | If (a,b,c) -> "if " ^ Expr.showexpr a ^ " " ^ printstmt b ^ " " ^ printstmt c
       | While (a,b) -> "while " ^ Expr.showexpr a ^ " " ^ printstmt b
       | Repeat _ -> "repeat"
       | Return t -> "return " ^ (match t with | None -> "none" | Some x -> Expr.showexpr x)
-      | Call _ -> "call"
+      | Call (x,_) -> "call " ^ x
 
     (* Statement evaluator
 
@@ -271,7 +298,7 @@ module Stmt =
        environment is the same as for expressions
     *)
 
-    let update st x v is =
+    let update (st : State.t) x v (is : Value.t list) : State.t =
       let rec update a v = function
       | []    -> v
       | i::tl ->
@@ -283,6 +310,10 @@ module Stmt =
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
 
+    let withPrintStmt t a = match t with
+      | Skip -> a
+      | Seq _ -> a
+      | x -> Printf.eprintf "%s\n" (printstmt t); a
     let rec eval env ((st,i,o,r) as conf : Expr.config) k t : Expr.config =
       let rombeek s1 s2 = if s2 = Skip then s1 else Seq (s1,s2) in
       let curry f (a, b) = f a b in
@@ -297,13 +328,16 @@ module Stmt =
       match (k,t) with
       | (Skip, Skip) ->          conf
       | (_, Skip) ->             eval env (dropr conf) Skip k
-      | (_, Assign (x, ixs, e)) -> posteval e @@ fun (st',i',o',_) r' -> (State.update x r' st',i',o',None),Skip,k
+      | (_, Assign (x, ixs, e)) ->
+         posteval e @@ fun conf' rhs ->
+                       let ((st',i',o',ixs') as conf'') = Expr.eval_list env conf' ixs
+                       in (update st' x rhs ixs',i',o',None),Skip,k
       | (_, Seq (l,r)) ->        eval env conf (rombeek r k) l
       | (_, If (e,l,r)) ->       posteval e @@ fun c r' -> dropr c, k, (intfork r' r l)
       | (_, While (e, t')) ->    posteval e @@ fun c r' -> (intfork r' (dropr c,Skip,k) (dropr c,rombeek t k, t'))
       | (_, Repeat (t', e)) ->   let conf' = eval env conf Skip t' in
                                  let (st',i',o',r') = Expr.eval env conf' e in
-                                curry (eval env (st',i',o',None)) @@ (intfork (fromSome r') (k,t) (Skip,k))
+                                 curry (eval env (st',i',o',None)) @@ (intfork (fromSome r') (k,t) (Skip,k))
       | (_, Call (func,args)) -> eval env (Expr.evalCall env conf func args Expr.eval) Skip k
       | (_, Return None) ->      conf
       | (_, Return (Some e)) ->  Expr.eval env conf e

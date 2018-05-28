@@ -2,15 +2,12 @@
 
 open List
 
-let tl' s = function
-      | [] -> failwith ("tl': " ^ s)
-      | (_::xs) -> xs
-let rec drop n l = if n == 0 then l else drop (n-1) (tl l)
-let rec take n l = if n == 0 then [] else hd l :: take (n-1) (tl l)
 let flip x a b = x b a
 let id x = x
 let foldl = fold_left
+let foldr = fold_right
 let swap (a,b) = (b,a)
+let const x = fun _ -> x
 (* Composition... *)
 let (%) a b = fun x -> a (b x)
 
@@ -20,6 +17,13 @@ let first f (a,b) = (f a,b)
 
 (* fromMaybe *)
 let fromSome = function | Some x -> x | None -> failwith "fromRes: failed to resolve None"
+
+let tl' s = function
+      | [] -> failwith ("tl': " ^ s)
+      | (_::xs) -> xs
+let rec drop n l = if n == 0 then l else drop (n-1) (tl l)
+let rec take n l = if n == 0 then [] else hd l :: take (n-1) (tl l)
+let dropEnd n = List.rev % drop n % List.rev
 
 (* Yes, that's right -- no [a..b] notation :joy: *)
 let rec buildList a b = if a < b

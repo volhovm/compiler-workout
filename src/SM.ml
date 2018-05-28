@@ -67,11 +67,12 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) pr
            | _                              -> failwith "CJMP wrong type")
       | _         -> failwith "eval.CJMP: empty stack")
   | x :: xs ->
-     let (s' : config) = match x with
+     let (c' : config) = match x with
        | CONST c -> (cstack, (Value.Int c) :: stack, sconf)
        | BINOP op -> (match stack with
-                        | (b::(a::c)) -> (cstack, (Language.Expr.evalbinop op a b)::c, sconf)
-                        | _           -> failwith "eval.BINOP: less then 2 args on the stack")
+                      | (b::a::c) -> let (s',i',o',r) = Language.Expr.evalBinop (s,i,o,None) op a b
+                                     in (cstack, (fromSome r)::c, (s',i',o'))
+                      | _           -> failwith "eval.BINOP: less then 2 args on the stack")
        | LD y -> (cstack,(State.eval s y)::stack,sconf)
        | ST y -> (match stack with
                   | (a::xs) -> (cstack, xs, (Language.State.update y a s, i, o))
@@ -88,7 +89,7 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) pr
                                     assocVars
           in (cstack,newstack, (newS,i,o))
        | _       -> failwith "sm eval: can't happen"
-     in eval env s' xs
+     in eval env c' xs
 
 (* Top-level evaluation
 
