@@ -243,13 +243,11 @@ module Expr =
           `Lefta, mkBinop ["+"; "-"];
           `Lefta, mkBinop ["*"; "/"; "%"]
         |]
-        p2);
+        pMiddle);
 
-      p2 : e:p3 ".length" { Length e }
-         | p3 ;
-
-      p3 : e:pLeaf ixs:(-"[" parse -"]")* { foldl (fun e ix -> Elem (e, ix)) e ixs }
-         | pLeaf ;
+      pMiddle : e:pLeaf ixs:(-"[" parse -"]")* len:(".length")? {
+                let a = foldl (fun e ix -> Elem (e, ix)) e ixs
+                in match len with (Some _) -> Length a | None -> a };
 
       pLeaf: fooname:IDENT "(" args:!(Util.list0 parse) ")" { Call (fooname,args) }
            | x:IDENT { Var x }
@@ -258,8 +256,8 @@ module Expr =
            | "[" elems:!(Util.list parse) "]" { Array elems }
            | d:DECIMAL { Const d }
            | -"(" parse -")"
-
     )
+
   end
 
 (* Simple statements: syntax and sematics *)
