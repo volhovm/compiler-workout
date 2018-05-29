@@ -55,5 +55,5 @@ let main =
     match (*Stdlib.time "parse"*) parse infile with
         | `Ok (prog : Language.t) -> (*Stdlib.time "proceed"*) proceed prog
         | `Fail er -> Printf.eprintf "Syntax error: %s\n" er
-  with Invalid_argument _ ->
-    Printf.printf "Usage: rc [-i | -s] <input file.expr>\n"
+  with Invalid_argument o ->
+    Printf.printf "Usage: rc [-i | -s] <input file.expr>\nError: %s" o

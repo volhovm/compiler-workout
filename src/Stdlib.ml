@@ -41,6 +41,7 @@ let rec buildList a b = if a < b
 (* Because i don't know how to upgrade ocaml to make List.init available :shrug: *)
 let listInit len f = List.map f (buildList 0 (len - 1))
 
+let concat = List.concat
 let concatMap f = List.concat % List.map f
 
 let strToList (s : string) : (char list) =
@@ -63,3 +64,10 @@ let time s f x =
 
 let showList f l = "[" ^ (String.concat ", " (List.map f l)) ^ "]"
 let showIntList = showList string_of_int
+
+
+(* Lens. LENS. L E  N        S    !! !  ! 1 1!!  1!  1     !  *)
+let mod3_1 f (a,b,c)  = (f a,b,c)
+let mod3_3 f (a,b,c)  = (a,b,f c)
+let mod4_1 f (a,b,c,d)  = (f a,b,c,d)
+let mod4_4 f (a,b,c,d)  = (a,b,c,f d)

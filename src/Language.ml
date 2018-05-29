@@ -128,7 +128,8 @@ module Builtin =
     | ".length"  -> (st, i, o, Some (Value.of_int (match List.hd args with
                                                    | Value.Array a -> List.length a
                                                    | Value.String s -> String.length s
-                                                   | Value.Int i -> failwith @@ Printf.sprintf ".length called with int %d" i)))
+                                                   | Value.Sexp (tag,xs) -> List.length xs
+                                                   | _ -> failwith @@ Printf.sprintf ".length called with %s" (Value.showVal (List.hd args)))))
     | ".array"   -> (st, i, o, Some (Value.of_array args))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))
@@ -172,8 +173,6 @@ module Expr =
     (* The type of configuration: a state, an input stream, an output stream, an optional value *)
     type config = State.t * int list * int list * Value.t option
 
-    (* Lens. LENS. L E  N        S    !! !  ! 1 1!!  1!  1     !  *)
-    let mod4 (s,i,o,r) f = (s,i,o,f r)
 
 
     (* Expression evaluator
@@ -214,7 +213,7 @@ module Expr =
 
     let evalBinop (conf : config) (op : string) (x : Value.t) (y : Value.t) : config =
       match (x,y,op) with
-      | (Int a, Int b, _) -> mod4 conf (const @@ Some (Value.Int (evalIntBinop op a b)))
+      | (Int a, Int b, _) -> mod4_4 (const @@ Some (Value.Int (evalIntBinop op a b))) conf
       | _ -> failwith "ntoeua"
 
     let rec evalCall env conf f args eval =
@@ -232,8 +231,8 @@ module Expr =
           | Const x -> retSame (Value.Int x)
           | Var v -> retSame (State.eval st v)
           | String s -> retSame (Value.String s)
-          | Array a -> mod4 (eval_list env conf a) (fun xs -> Some (Value.Array xs))
-          | Sexp (t,vals) -> mod4 (eval_list env conf vals) (fun xs -> Some (Value.Sexp (t, xs)))
+          | Array a -> mod4_4  (fun xs -> Some (Value.Array xs)) (eval_list env conf a)
+          | Sexp (t,vals) -> mod4_4 (fun xs -> Some (Value.Sexp (t, xs))) (eval_list env conf vals)
           | Binop (op, l, r) ->
              let ((_,_,_,l') as conf1) = eval env conf l in
              let ((st',i',o',r') as conf2) = eval env conf1 r in

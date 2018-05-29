@@ -101,6 +101,22 @@ let rec eval env ((cstack,(stack : Value.t list),((s,i,o) as sconf)) as conf) pr
                                     (State.enter s (vars @ locals))
                                     assocVars
           in (cstack,newstack, (newS,i,o))
+       | SEXP (s,n) -> let (vals,stack') = splitAt n stack in
+                       (cstack, Value.Sexp (s, (List.rev vals)) :: stack', sconf)
+       | DROP -> (cstack, drop 1 stack, sconf)
+       | DUP -> (cstack, (List.hd stack)::stack, sconf)
+       | SWAP -> (cstack, (List.rev @@ take 2 stack) @ (drop 2 stack), sconf)
+       | TAG s -> let x::stack' = stack in
+                  let res = match x with | Value.Sexp (t,_) when t = s -> Value.Int 1
+                                         | _ -> Value.Int 0 in
+                  (cstack, res::stack', sconf)
+       | ENTER v -> let (vals,stack') = splitAt (List.length v) stack in
+                    let stmap = foldl (fun st (i,r) -> State.bind i r st)
+                                      State.undefined
+                                      (zip v (List.rev vals)) in
+                    (cstack, stack', mod3_1 (fun st -> State.push st stmap v) sconf)
+       | LEAVE -> (cstack, stack, mod3_1 State.drop sconf)
+
        | _       -> failwith "sm eval: can't happen"
      in eval env c' xs
 
@@ -145,50 +161,125 @@ let run (p : prg) (i : int list) : int list =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
+open Language
 let rec compile (defs,stmt0) : prg =
-  let mkl s n = "l_" ^ s ^ (string_of_int n)
-  in let rec compileExpr e = match e with
-          | Language.Expr.Const n -> [CONST n]
-          | Language.Expr.String s -> [STRING s]
-          | Language.Expr.Array l ->
+  (* Internal labels *)
+  let mkl s n = "l_" ^ s ^ (string_of_int n) in
+  (* External labels for compatibility (maybe they should be one) *)
+  let lab s = "L" ^ s in
+  let rec compileExpr e = match e with
+          | Expr.Const n -> [CONST n]
+          | Expr.String s -> [STRING s]
+          | Expr.Array l ->
              concatMap compileExpr (List.rev l) @ [CALL (".array",List.length l,false)]
-          | Language.Expr.Var x -> [LD x]
-          | Language.Expr.Binop (op,x,y) -> compileExpr x @ compileExpr y @ [BINOP op]
-          | Language.Expr.Elem (a,ix) -> compileExpr ix @ compileExpr a @ [CALL (".elem",2,false)]
-          | Language.Expr.Length a -> compileExpr a @ [CALL (".length",1,false)]
-          | Language.Expr.Call (l,args) ->
-            let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
-            in ax @ [CALL ("L" ^ l,List.length args,false)]
-  in let rec compileStmt n = function
-     | Language.Stmt.Assign (x,[],e) -> (n, compileExpr e @ [ST x])
-     | Language.Stmt.Assign (x,ixs,e) -> (n, concatMap compileExpr ixs @
+          | Expr.Var x -> [LD x]
+          | Expr.Sexp (t,a) -> concatMap compileExpr a @ [SEXP (t,List.length a)]
+          | Expr.Binop (op,x,y) -> compileExpr x @ compileExpr y @ [BINOP op]
+          | Expr.Elem (a,ix) -> compileExpr ix @ compileExpr a @ [CALL (".elem",2,false)]
+          | Expr.Length a -> compileExpr a @ [CALL (".length",1,false)]
+          | Expr.Call (l,args) ->
+            let (ax : prg) = concatMap compileExpr @@ List.rev args
+            in ax @ [CALL (lab l, List.length args,false)] in
+  let rec compileStmt n = function
+     | Stmt.Assign (x,[],e) -> (n, compileExpr e @ [ST x])
+     | Stmt.Assign (x,ixs,e) -> (n, concatMap compileExpr ixs @
                                              compileExpr e @
                                              [STA (x,List.length ixs)])
-     | Language.Stmt.Seq (l,r) ->
+     | Stmt.Seq (l,r) ->
         let (n1,l') = compileStmt n l in
         let (n2, r') = compileStmt n1 r in
         (n2, l' @ r')
-     | Language.Stmt.Skip      -> (n, [])
-     | Language.Stmt.Return x ->
+     | Stmt.Skip      -> (n, [])
+     | Stmt.Return x ->
         (n, (match x with | None -> [] | Some y -> compileExpr y) @ [RET (x <> None)])
-     | Language.Stmt.If (e,l,r) ->
+     | Stmt.If (e,l,r) ->
         let (n1, s1) = compileStmt n l in
         let l1 = "l_if" ^ (string_of_int n1) ^ "_1" in
         let (n2, s2) = compileStmt (n1+1) r in
         let l2 = "l_if" ^ (string_of_int n2) ^ "_2" in
         (n2+1, compileExpr e @ [CJMP ("z", l1)] @ s1 @ [JMP l2; LABEL l1] @ s2 @ [LABEL l2])
-     | Language.Stmt.While (e,s) ->
+     | Stmt.While (e,s) ->
         let l1 = mkl "wh" n in
         let (n', s') = compileStmt (n+1) s in
         let l2 = mkl "wh" n' in
         (n'+1, [JMP l2; LABEL l1] @ s' @ [LABEL l2] @ compileExpr e @ [CJMP ("nz", l1)])
-     | Language.Stmt.Repeat (s,e) ->
+     | Stmt.Repeat (s,e) ->
         let l1 = mkl "rep" n in
         let (n', s') = compileStmt (n+1) s in
         (n', [LABEL l1] @ s' @ compileExpr e @ [CJMP ("z", l1)])
-     | Language.Stmt.Call (l,args) ->
+     | Stmt.Call (l,args) ->
         let (ax : prg) = List.concat @@ List.map compileExpr @@ List.rev args
-        in (n, ax @ [CALL ("L" ^ l,List.length args,true)])
+        in (n, ax @ [CALL (lab l,List.length args,true)])
+     | Stmt.Case (e,b) ->
+        (* Yes, I've seen that there's "deriving foldl", but i have no idea how to use it *)
+        let rec allVars = function
+          | Stmt.Pattern.Wildcard -> []
+          | Stmt.Pattern.Ident x -> [x]
+          | Stmt.Pattern.Sexp (_,xs) -> concatMap allVars xs in
+        let caseL i = "l_case_" ^ string_of_int n ^ "_" ^ string_of_int i in
+        let lastCaseLabel = caseL (List.length b) in
+        (* It doesn't compare array sizes, is it alright? *)
+        (* No, really, .elem is unsafe, and we invoke it with some unchecked index i.... *)
+        (* I could add "int" to TAG, but I'm not sure it is legal *)
+        let rec genMatch inext = function
+          | Stmt.Pattern.Wildcard -> [DROP]
+          | Stmt.Pattern.Ident _ -> [DROP]
+          | Stmt.Pattern.Sexp (t,xs) ->
+             let guard = CJMP ("z", caseL inext) in
+             (* I'm not sure that we need swap here... *)
+             let eachChild i = function
+               | (Stmt.Pattern.Sexp _ as pat) ->
+                  [DUP; CONST i; SWAP; CALL (lab ".elem", 2, false)] @ genMatch inext pat
+               (* We don't have to do it if pat is wildcard or ident *)
+               | _ -> [] in
+             let llen = List.length xs in
+             (* check if tag matches *)
+             let tagMatches = [ DUP; TAG t; guard ] in
+             (* check if array length matches expected one *)
+             let arrayLenMatches =
+               if llen == 0
+               then []
+               else [ DUP;
+                      CALL (lab ".length", 1, false);
+                      CONST llen;
+                      BINOP "==";
+                      guard ] in
+             tagMatches @
+             arrayLenMatches @
+             concatMap (uncurry eachChild) (zip (buildList 0 (llen-1)) xs)
+               (* [ DROP ] *)
+        (* value on top of stack is useful one *)
+        in let rec genBind = function
+             (* but we don't need it *)
+             | Stmt.Pattern.Wildcard -> [DROP]
+             (* we'd like to save it, so swap with previous one *)
+             | Stmt.Pattern.Ident x -> [SWAP]
+             | Stmt.Pattern.Sexp (_,xs) ->
+                let eachChild i pat =
+                  [DUP; CONST i; SWAP; CALL (lab ".elem", 2, false)] @ genBind pat in
+                let children = concatMap (uncurry eachChild)
+                                         (zip (buildList 0 (List.length xs - 1)) xs) in
+                [DUP] @ children @ [DROP] in
+        let rec genBranch i n' = function
+          | (p,bi)::xs ->
+             let cl = if i = 0 then [] else [ LABEL (caseL i) ] in
+             let (n'',body) = compileStmt (n+1) bi in
+             let (lastN, cont) = genBranch (i+1) n'' xs in
+             (lastN, concat [ cl
+                            ; [LABEL (mkl "DEBUG_MATCH_START_" n')]
+                            ; genMatch (i+1) p
+                            ; [LABEL (mkl "DEBUG_MATCH_END_" n')]
+                            ; genBind p
+                            ; [LABEL (mkl "DEBUG_BIND_END_" n')]
+                            ; [ ENTER (allVars p) ]
+                            ; [ DROP ] (* Drop matching variable *)
+                            ; body
+                            ; [ LEAVE ]
+                            ; [ JMP lastCaseLabel ]
+                            ; cont ])
+          | _ -> (n', []) in
+        let (n', branchesCode) = genBranch 0 (n+1) b in
+        (n', compileExpr e @ branchesCode @ [LABEL lastCaseLabel])
      in let rec compileDef n (fname,(args,locals,body)) =
         let (n', c) = compileStmt n body in
         let fname = "L" ^ fname in
