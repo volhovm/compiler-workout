@@ -32,7 +32,7 @@ let main =
     let to_compile = not (interpret || stack) in
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
     let proceed (prog : Language.t) =
-            (*Printf.eprintf "parsed!\n";*)
+            Printf.eprintf "parsed!\n";
             if to_compile
             then
               let basename = Filename.chop_suffix infile ".expr" in

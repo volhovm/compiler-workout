@@ -41,7 +41,8 @@ module Value =
     let rec showVal = function
       | (Int i) -> string_of_int i
       | (String s) -> "\"" ^ s ^ "\""
-      | (Array a) -> "[" ^ String.concat ", " (List.map showVal a) ^ "]"
+      | (Array a) -> showList showVal a
+      | (Sexp (t, a)) -> "`" ^ t ^ " " ^ showList showVal a
 
   end
 
@@ -100,7 +101,9 @@ module State =
       recurse st'
 
     (* Push a new local scope *)
-    let push st s xs = L (xs, s, st)
+    let push st s xs =
+      (* Printf.eprintf "Pushing to the stack: %s" (showList id xs); *)
+      L (xs, s, st)
 
     (* Drop a local scope *)
     let drop (L (_, _, e)) = e
@@ -172,8 +175,6 @@ module Expr =
     (* Lens. LENS. L E  N        S    !! !  ! 1 1!!  1!  1     !  *)
     let mod4 (s,i,o,r) f = (s,i,o,f r)
 
-    let rec show_list_int l = "[" ^ (String.concat ", " @@ List.map string_of_int l) ^ "]"
-    let rec show_list l = "[" ^ (String.concat ", " @@ List.map Value.showVal l) ^ "]"
 
     (* Expression evaluator
 
@@ -229,9 +230,10 @@ module Expr =
       let retSame x = (st,i,o,Some x) in
       match e with
           | Const x -> retSame (Value.Int x)
+          | Var v -> retSame (State.eval st v)
           | String s -> retSame (Value.String s)
           | Array a -> mod4 (eval_list env conf a) (fun xs -> Some (Value.Array xs))
-          | Var v -> retSame (State.eval st v)
+          | Sexp (t,vals) -> mod4 (eval_list env conf vals) (fun xs -> Some (Value.Sexp (t, xs)))
           | Binop (op, l, r) ->
              let ((_,_,_,l') as conf1) = eval env conf l in
              let ((st',i',o',r') as conf2) = eval env conf1 r in
@@ -290,6 +292,8 @@ module Expr =
            | c:CHAR { Const (Char.code c) }
            | "[" elems:!(Util.list parse) "]" { Array elems }
            | d:DECIMAL { Const d }
+           | "`" tag:IDENT elems:(-"(" !(Util.list parse) -")")?
+                     { Sexp (tag, someToList elems) }
            | -"(" parse -")"
     )
 
@@ -312,11 +316,17 @@ module Stmt =
 
         (* Pattern parser *)
         ostap (
-          parse: empty {failwith "Not implemented"}
+          parse: i:IDENT { Ident i }
+               | -"_"    { Wildcard }
+               | "`" tag:IDENT elems:(-"(" !(Util.list parse) -")")?
+                         { Sexp (tag, someToList elems) }
         )
 
         let vars p =
-          transform(t) (object inherit [string list] @t[foldl] method c_Ident s _ name = name::s end) [] p
+          transform(t) (object
+                          inherit [string list] @t[foldl]
+                          method c_Ident s _ name = name::s
+                        end) [] p
 
       end
 
@@ -396,6 +406,36 @@ module Stmt =
       | (_, Call (func,args)) -> eval env (Expr.evalCall env conf func args Expr.eval) Skip k
       | (_, Return None) ->      conf
       | (_, Return (Some e)) ->  Expr.eval env conf e
+      | (_, Leave) ->            eval env (State.drop st,i,o,r) Skip k
+      | (_, Case (e,branches)) ->
+            let ((st',i',o',v) as conf') = Expr.eval env conf e in
+            (* patternMatches returns Some (xs,s) in case of success,
+               where xs is list of variables used and s is their mapping *)
+            let rec patternMatches (p : Pattern.t) (r : Value.t) : (string * Value.t) list option = match (p,r) with
+              | (Pattern.Wildcard,_) -> Some []
+              | (Pattern.Ident x,_) -> Some [(x,r)]
+              | (Pattern.Sexp (t,l),Value.Sexp (t',l'))
+                   when (t = t' && List.length l = List.length l') ->
+                 (* OH YEAH i LOVE doing maybe binds with my bare hands! MOAR!! :slurp: *)
+                 foldl (fun xsM ysM -> match (xsM,ysM) with
+                                      | (None,_) -> None
+                                      | (_,None) -> None
+                                      | (Some xs, Some ys) -> Some (xs @ ys))
+                       (Some [])
+                       (List.map (uncurry patternMatches) (zip l l'))
+              | _ -> None in
+            let rec procBranch = function
+              | [] -> failwith "pattern matching failed"
+              | ((pat,branch)::xs) ->
+                 match patternMatches pat (fromSome v) with
+                 | None -> procBranch xs
+                 | Some v ->
+                    let xs = List.map fst v in
+                    let s = foldl (fun s' (i,v) -> State.bind i v s')
+                                  (fun y -> failwith "bugaga")
+                                  v in
+                    eval env (State.push st' s xs,i',o',None) (Seq (Leave,k)) branch
+            in procBranch branches
 
     (* Statement parser *)
     ostap (
@@ -413,7 +453,14 @@ module Stmt =
           | %"skip"                                                  { Skip }
           | x:IDENT ixs:(-"[" !(Expr.parse) -"]")* ":=" e:!(Expr.parse) { Assign (x,ixs,e) }
           | fooname:IDENT "(" args:!(Util.list0 Expr.parse) ")"      { Call (fooname,args) }
+          | %"case" e:!(Expr.parse) %"of"
+            elems:!(Util.listBy bar parseCaseBranch)
+            %"esac"
+            { Case (e, elems) }
           ;
+
+      bar: -"|";
+      parseCaseBranch: p:!(Pattern.parse) -"->" b:parse { (p,b) };
 
       multiIf: %"if" i:nested %"fi" { i };
       nested: e:!(Expr.parse) %"then" s1:parse s2:multiIfElse { If (e, s1, s2) };

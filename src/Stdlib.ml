@@ -11,6 +11,10 @@ let swap (a,b) = (b,a)
 let const x = fun _ -> x
 (* Composition... *)
 let (%) a b = fun x -> a (b x)
+let zip = List.combine
+
+let curry f a b = f (a,b)
+let uncurry f (a, b) = f a b
 
 (* that's a parody of bifunctors, right *)
 let second f (a,b) = (a,f b)
@@ -18,6 +22,7 @@ let first f (a,b) = (f a,b)
 
 (* fromMaybe *)
 let fromSome = function | Some x -> x | None -> failwith "fromRes: failed to resolve None"
+let someToList = function | Some x -> x | None -> []
 
 let tl' s = function
       | [] -> failwith ("tl': " ^ s)
@@ -55,3 +60,6 @@ let time s f x =
     let fx = f x in
     Printf.eprintf "Time of %s: %fs\n" s (Sys.time() -. t);
     fx
+
+let showList f l = "[" ^ (String.concat ", " (List.map f l)) ^ "]"
+let showIntList = showList string_of_int

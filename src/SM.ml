@@ -38,7 +38,7 @@ let print_prg p = List.iter (fun i -> Printf.eprintf "%s\n" (showi i)) p
 type econfig = State.t * int list * int list
 type config = (prg * State.t) list * Value.t list * econfig
 
-let printStack stack = Printf.eprintf "stack: %s\n" (Language.Expr.show_list stack)
+let printStack stack = Printf.eprintf "stack: %s\n" (showList Value.showVal stack)
 
 (* Stack machine interpreter
 
