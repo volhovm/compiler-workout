@@ -1,4 +1,5 @@
 (* Module for functions that should be in prelude, but for some reason they are not *)
+(* And also some utility functions *)
 
 open List
 
@@ -48,3 +49,9 @@ let strTake n = strFromList % take n % strToList
 (* Same problem as with listInit *)
 let stringInit (len : int) (f : int -> char) =
     String.concat "" (List.map (String.make 1 % f) (buildList 0 (len - 1)))
+
+let time s f x =
+    let t = Sys.time() in
+    let fx = f x in
+    Printf.eprintf "Time of %s: %fs\n" s (Sys.time() -. t);
+    fx
