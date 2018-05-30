@@ -223,7 +223,7 @@ let rec compile env code =
     | LEAVE -> failwith "LEAVE not implemented, it's for HW12"
 
   in (*Printf.eprintf "length of code: %d\n" (length code);*)
-     foldl (fun (env,acc) i -> Printf.eprintf "%s\n" (SM.showi i);
+     foldl (fun (env,acc) i -> (*Printf.eprintf "%s\n" (SM.showi i);*)
                                second (fun x -> acc @ x) (compileStep env i))
            (env,[])
            code
