@@ -32,7 +32,9 @@ let esp = R 7
 
 let showopnd = function
   | (R i) -> Printf.sprintf "R %d" i
-  | _ -> Printf.sprintf "Otheropnd"
+  | (S i) -> Printf.sprintf "S %d" i
+  | (L i) -> Printf.sprintf "L %d" i
+  | (M _) -> Printf.sprintf "M smth"
 
 (* Now x86 instruction (we do not need all of them): *)
 type instr =
@@ -64,6 +66,7 @@ let show instr =
   | "!!"  -> "orl"
   | "^"   -> "xorl"
   | "cmp" -> "cmpl"
+  | "xchg" -> "xchg"
   | _     -> failwith "unknown binary operator"
   in
   let opnd = function
@@ -101,6 +104,7 @@ open SM
 *)
 
 let rec compile env code =
+  (*print_prg code; Printf.eprintf "----------\n";*)
   let updenv (s,env') action = env', action s in
   let null x = Binop ("^", x, x) in
   let isreg x = match x with R _ -> true | _ -> false in
@@ -108,6 +112,43 @@ let rec compile env code =
     if a = b then [] else
     if not (isreg a || isreg b) then [Mov (a,eax); Mov (eax,b)] else [Mov (a, b)] in
   let withreg x code' = if isreg x then code' x else [Mov (x,edx)] @ code' edx in
+  let bind a1 a2 = fun env -> let (x,env') = a1 env in a2 env' in
+  let tagToInt t = let l = (List.map Char.code @@ strToList t)
+                   in (nth l 0) land 0xf0000 +
+                      (nth l 1) land 0xf000 +
+                      (nth l 2) land 0xf00 +
+                      (nth l 3) land 0xf0 +
+                      (nth l 4) land 0xf in
+  let genCall env l n p =
+       let ll = strToList l in
+       let l = strFromList @@ match hd ll with | '.' -> 'B'::(tl ll) | _ -> ll in
+       let push = fun x -> Push x in (* Because in ocaml constructors are not functions *)
+       let passopnds, env' =
+         if n == 0
+         then [], env
+         (* It receives args in the reversed order, as in stack -- head the newest *)
+         else let modPush (toPush : opnd list) : opnd list = match l with
+                | "Barray" -> (L n) :: toPush
+                | "Bsta"   -> let x::v::is = toPush in [L (n-2); v; x] @ (rev is)
+                | _ -> toPush in
+              first (List.rev % modPush) (env#popMany n) in
+       let passargs = map push passopnds in
+       let pushedN = List.length passargs in
+       let lreg = env'#live_registers in
+       let saveregs = map push lreg in
+       let restregs = rev @@ map (fun x -> Pop x) lreg in
+       let cleanup = if pushedN == 0 then [] else [Binop ("+",L (pushedN*word_size),esp)] in
+       let env'', retVar = if p then env', [] else updenv env'#allocate (fun s -> [Mov (eax, s)]) in
+       env'', [Meta "#saving regs"] @
+              saveregs @
+              [Meta "#passing args"] @
+              passargs @ [Meta "#calling"] @
+              [Call l] @
+              cleanup @
+              [Meta "#restoring regs"] @
+              restregs @
+              [Meta "#retval"] @
+              retVar in
   let compileStep env = function
     | CONST n         -> updenv env#allocate            @@ fun s -> [Mov (L n, s)]
     | LD x            -> updenv (env#global x)#allocate @@ fun s -> safeMov (env#loc x) s
@@ -115,26 +156,7 @@ let rec compile env code =
     | LABEL l         -> env, [Label l]
     | JMP l           -> env, [Jmp l]
     | CJMP (s,l)      -> updenv (env#pop) @@ flip withreg @@ fun x -> [Binop ("!!", x, x); CJmp (s,l)]
-    | CALL (l,n,p)    ->
-       let push = fun x -> Push x in (* Because in ocaml constructors are not functions *)
-       let passargs, env' =
-         if n == 0
-         then [], env
-         else first (rev % map push) (env#popMany n) in
-       let lreg = env'#live_registers in
-       let saveregs = map push lreg in
-       let restregs = rev @@ map (fun x -> Pop x) lreg in
-       let cleanup = if n == 0 then [] else [Binop ("+",L (n*word_size),esp)] in
-       let env'', retVar = if p then env', [] else updenv env'#allocate (fun s -> [Mov (eax, s)]) in
-       env'', saveregs @
-              [Meta "#passing args.."] @
-              passargs @ [Meta "#calling"] @
-              [Call l] @
-              cleanup @
-              [Meta "#restoring"] @
-              restregs @
-              [Meta "#retval"] @
-              retVar
+    | CALL (l,n,p)    -> genCall env l n p
     | BEGIN (l,vr,ls) ->
        let env' = env#enter l vr ls in
        let prologue = [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ (env'#lsize)), esp)] in
@@ -173,8 +195,35 @@ let rec compile env code =
          | "&&" | "!!" -> convBin lhs @ convBin rhs @
                           withreg lhs (fun x -> [Binop (op, rhs, x); Mov (x, newvar)])
          | x -> failwith ("binop not supported: " ^ x))
+    | STRING s        ->
+       let s, env' = env#string s in
+       let l, env'' = env'#allocate in
+       let env''', call = genCall env'' ".string" 1 false in
+       env''', (safeMov (M ("$" ^ s)) l) @ call
+    | STA (y,n)       ->
+       let s, env' = (env#global y)#allocate in
+       second (fun c -> safeMov (env'#loc y) s @ c) @@ genCall env' ".sta" (n+2) true
+    | DROP -> updenv (env#pop) @@ const []
+    | DUP -> updenv (env#allocate) @@ fun s -> safeMov (env#peek) s
+    | SWAP ->
+       (env,
+        let [x;y] = env#peek2 in
+        let xch a b = [ Binop ("xchg", a, b) ] in
+        match (isreg x, isreg y) with
+        | (true,_) -> xch y x
+        | (_,true) -> xch x y
+        | _ -> safeMov x eax @ safeMov y x @ safeMov eax y)
+    | TAG t ->
+       let s, env' = env#allocate in
+       second (fun c -> [Mov (L (tagToInt t), s)] @ c) (genCall env' ".tag" 1 false)
+    | SEXP (t,n)      ->
+       let s, env' = env#allocate in
+       second (fun c -> [Mov (L (tagToInt t), s)] @ c) @@ genCall env' ".sexp" (n+1) true
+    | ENTER vars -> failwith "ENTER not implemented, it's for HW12"
+    | LEAVE -> failwith "LEAVE not implemented, it's for HW12"
+
   in (*Printf.eprintf "length of code: %d\n" (length code);*)
-      foldl (fun (env,acc) i -> (*Printf.eprintf "%s\n" (SM.showi i);*)
+     foldl (fun (env,acc) i -> Printf.eprintf "%s\n" (SM.showi i);
                                second (fun x -> acc @ x) (compileStep env i))
            (env,[])
            code
@@ -241,6 +290,9 @@ class env =
         let y = Printf.sprintf "string_%d" scount in
         let m = M.add x y stringm in
         y, {< scount = scount + 1; stringm = m>}
+
+    method peek = List.hd stack
+    method peek2 = take 2 stack
 
     (* gets all global variables *)
     method globals = S.elements globals
